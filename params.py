@@ -1,6 +1,10 @@
 import math
 
 
+train_steps = 1000
+lr = 1e-3
+zero_filling = True
+
 timesteps = 128
 duration = 0.5  # ms
 dt = duration / (timesteps - 1)
@@ -14,7 +18,7 @@ FoV = 224  # mm
 res = 50
 n_petals = 80
 
-model_size = 21  # number of Fourier coefficients
+model_size = 11  # number of Fourier coefficients
 
 kmax_traj = res / (2 * FoV)  # 1/m
 kmax_img = img_size / (2 * FoV)  # 1/m

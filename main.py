@@ -1,95 +1,89 @@
-from utils import get_phantom, rotate_trajectory
+from utils import (
+    get_phantom,
+    make_rosette,
+    grad_slew_loss,
+    img_loss,
+    sample_k_space_values,
+    reconstruct_img,
+    TrainPlotter,
+)
 import matplotlib.pyplot as plt
-from mirtorch.linear import FFTCn, NuSense
+from mirtorch.linear import FFTCn
 from nets import FourierCurve
 import torch
-import torch.nn.functional as F
-from torchkbnufft import calc_density_compensation_function
 from params import *
+from aux.plot_pixel_rosette import plot_pixel_rosette
 
 
 phantom = get_phantom(size=(img_size, img_size))
-
 
 # Compute FFT:
 Fop = FFTCn(phantom.shape, phantom.shape, (0, 1), norm="ortho")
 fft = Fop * phantom
 
-
-# Make rosette trajectory:
 t = torch.linspace(0, duration, steps=timesteps).unsqueeze(1)  # (timesteps, 1)
-fc = FourierCurve(tmin=0, tmax=torch.max(t), initial_max=kmax_traj, n_coeffs=model_size)
-traj = fc(t)  # (timesteps, 2)
-rotated_trajectories = [traj]
-angle = 360 / n_petals
-for i in range(n_petals - 1):
-    traj = rotate_trajectory(traj, angle)
-    rotated_trajectories.append(traj)
+model = FourierCurve(tmin=0, tmax=torch.max(t), initial_max=kmax_traj, n_coeffs=model_size)
+optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+losses = []
+plotter = TrainPlotter(img_size)
+for step in range(train_steps):
+    traj = model(t)  # (timesteps, 2)
+    rosette = make_rosette(traj, n_petals, kmax_img, zero_filling=zero_filling)
+    grad_loss, slew_loss = grad_slew_loss(traj, dt, grad_max, slew_rate, gamma)
+
+    rosette, sampled, fft = sample_k_space_values(fft, rosette, kmax_img, zero_filling)
+    recon = reconstruct_img(rosette, sampled, img_size)
+    recon = final_FT_scaling * torch.flip(torch.rot90(recon.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
+
+    L2_loss = img_loss(recon, phantom)
+    total_loss = L2_loss + 1e-6 * grad_loss + 1e-7 * slew_loss
+
+    losses.append(total_loss.item())
+    optimizer.zero_grad()
+    total_loss.backward()
+    optimizer.step()
+
+    if step % 10 == 0:
+        plotter.update(step, losses, recon, traj)
+    print(f"Step {step+1}/{train_steps}")
+    print(f"  L2 loss: {L2_loss.item():.6f}")
+    print(f"  Gradient loss: {grad_loss.item():.6f}")
+    print(f"  Slew rate loss: {slew_loss.item():.6f}")
+    print(f"  Total loss: {total_loss.item():.6f}")
 
 
-# Zero filling:
-corners = torch.ones(2, 2)
-corners[0] *= kmax_img
-corners[1] *= -kmax_img
-rotated_trajectories.append(corners)
-traj = torch.cat(rotated_trajectories, dim=0)
+# region Plot results:
+# fig, ax = plt.subplots(2, 3)
+# im = ax[0, 0].imshow(phantom.numpy(), cmap="gray")
+# ax[0, 0].set_title("Phantom")
+# ax[0, 0].axis("off")
+# fig.colorbar(im, ax=ax[0, 0])
+# im = ax[0, 1].imshow(recon.abs().detach().numpy(), cmap="gray")
+# ax[0, 1].set_title("Recon")
+# ax[0, 1].axis("off")
+# fig.colorbar(im, ax=ax[0, 1])
+# im = ax[0, 2].imshow((recon.abs() - phantom).detach().numpy(), cmap="gray")
+# ax[0, 2].set_title("Phantom - Recon")
+# ax[0, 2].axis("off")
+# fig.colorbar(im, ax=ax[0, 2])
+# im = ax[1, 1].imshow(torch.angle(recon).detach().numpy(), cmap="gray")
+# ax[1, 1].set_title("Phase")
+# ax[1, 1].axis("off")
+# fig.colorbar(im, ax=ax[1, 1])
+# plt.show()
 
 
-# Sample FFT at trajectory locations:
-traj = traj.reshape(1, 1, traj.shape[0], 2) / kmax_img
-fft = fft.reshape(1, 1, img_size, img_size)
-sampled_r = F.grid_sample(fft.real, traj, mode="bicubic", align_corners=True)
-sampled_i = F.grid_sample(fft.imag, traj, mode="bicubic", align_corners=True)
-sampled = torch.complex(sampled_r, sampled_i).squeeze(0)
-sampled[:, :, -2:] *= 0  # zero filling
+# sampled_from_pixels = plot_pixel_rosette(rosette, fft, img_size)
 
-sampled_coord_x = torch.round((traj[0, 0, :, 0] / 2 - 1) * (img_size - 1) + img_size / 2)
-sampled_coord_y = torch.round((traj[0, 0, :, 1] / 2 - 1) * (img_size - 1) + img_size / 2)
-pixel_curve = torch.zeros(img_size, img_size)
-pixel_curve[sampled_coord_y.long(), sampled_coord_x.long()] = 1.0
-sampled_from_pixels = fft[0, 0, sampled_coord_y.long(), sampled_coord_x.long()]
-sampled_from_pixels[-2:] *= 0
+# plt.plot(sampled.squeeze().detach().numpy(), label="F.grid_sample", linewidth=0.7)
+# plt.plot(sampled_from_pixels.squeeze().detach().numpy(), label="Indexing", linewidth=0.7)
+# plt.legend()
+# plt.show()
 
-
-# Reconstruction with NUFFT:
-s0 = torch.ones(1, 1, img_size, img_size) + 0j
-traj0 = traj.squeeze().permute(1, 0) / torch.max(torch.abs(traj)) * torch.pi
-k0 = sampled.reshape(1, 1, -1)
-dcf = calc_density_compensation_function(traj0, (img_size, img_size))
-Nop = NuSense(s0, traj0)
-I0 = Nop.H * (dcf * k0)
-
-
-# Plot results:
-I0 = torch.flip(torch.rot90(I0.squeeze(), k=1, dims=(0, 1)), dims=[0]) * final_FT_scaling
-fig, ax = plt.subplots(2, 3)
-im = ax[0, 0].imshow(phantom.numpy(), cmap="gray")
-ax[0, 0].set_title("Phantom")
-ax[0, 0].axis("off")
-fig.colorbar(im, ax=ax[0, 0])
-im = ax[0, 1].imshow(I0.abs().detach().numpy(), cmap="gray")
-ax[0, 1].set_title("Recon")
-ax[0, 1].axis("off")
-fig.colorbar(im, ax=ax[0, 1])
-im = ax[0, 2].imshow((I0.abs() - phantom).detach().numpy(), cmap="gray")
-ax[0, 2].set_title("Phantom - Recon")
-ax[0, 2].axis("off")
-fig.colorbar(im, ax=ax[0, 2])
-im = ax[1, 1].imshow(torch.angle(I0).detach().numpy(), cmap="gray")
-ax[1, 1].set_title("Phase")
-ax[1, 1].axis("off")
-fig.colorbar(im, ax=ax[1, 1])
-plt.show()
-
-plt.imshow(pixel_curve.detach().numpy())
-plt.show()
-
-plt.plot(sampled.squeeze().detach().numpy(), label="F.grid_sample", linewidth=0.7)
-plt.plot(sampled_from_pixels.squeeze().detach().numpy(), label="Indexing", linewidth=0.7)
-plt.legend()
-plt.show()
-
-plt.plot(traj[0, 0, :-2, 0].detach().numpy(), traj[0, 0, :-2, 1].detach().numpy(), linewidth=0.7)
+fig, ax = plt.subplots(1, 2, figsize=(11, 5))
+ax[0].plot(rosette[0, 0, :-2, 0].detach().numpy(), rosette[0, 0, :-2, 1].detach().numpy(), linewidth=0.7)
+ax[1].plot(traj[:, 0].detach().numpy(), traj[:, 1].detach().numpy(), linewidth=0.7)
 plt.show()
 
 # fig, ax = plt.subplots(1, 2)
@@ -101,3 +95,4 @@ plt.show()
 # ax[1].set_title("Log FFT Magnitude")
 # ax[1].axis("off")
 # plt.show()
+# endregion
