@@ -7,7 +7,7 @@ class FourierPulseOpt(nn.Module):
 
     def __init__(self, t_min, t_max, n_coeffs=101, initialization="cos"):
         super().__init__()
-        p = 1e-2 * torch.randn((2 * n_coeffs + 1, 2))
+        p = 1e-3 * torch.randn((2 * n_coeffs + 1, 2))
         if initialization == "cos":
             p[n_coeffs + 1, 1] = 1.0
         elif initialization == "sin":
@@ -33,8 +33,10 @@ class FourierPulseOpt(nn.Module):
 
 
 class FourierCurve(nn.Module):
-    def __init__(self, tmin, tmax, n_coeffs=101):
+    def __init__(self, tmin, tmax, initial_max=1.0, n_coeffs=51):
         super().__init__()
+        self.scaling = initial_max * 0.5
+        self.center = (tmax + tmin) * 0.5
         self.pulses = nn.ModuleList(
             [
                 FourierPulseOpt(tmin, tmax, n_coeffs=n_coeffs, initialization="cos"),
@@ -49,5 +51,5 @@ class FourierCurve(nn.Module):
         return super().to(device)
 
     def forward(self, x):
-        out = torch.cat([self.pulses[0](x) + self.pulses[0](0), self.pulses[1](x)], dim=-1)
-        return out * 0.5
+        out = torch.cat([self.pulses[0](x) - self.pulses[0](self.center), self.pulses[1](x)], dim=-1)
+        return out * self.scaling

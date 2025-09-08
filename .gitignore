@@ -1,0 +1,6 @@
+aux/
+*.npz
+*.h5
+*.ipynb
+.venv/
+__pycache__/
