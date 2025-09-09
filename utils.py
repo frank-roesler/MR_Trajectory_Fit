@@ -6,6 +6,7 @@ from torchkbnufft import calc_density_compensation_function
 from Bjork.sys_op import NuSense_om
 from mirtorch.linear import NuSense
 import matplotlib.pyplot as plt
+import Nufftbindings.nufftbindings.kbnufft as kbnufft
 
 
 def get_phantom(size=(1024, 1024)):
@@ -60,6 +61,17 @@ def reconstruct_img(rosette, sampled, img_size):
     # Nop = NuSense(s0, rosette0)
     I0 = Nop.H * (dcf * k0)
     return I0
+
+
+def reconstruct_img2(rosette, sampled, img_size):
+    rosette = rosette.squeeze().permute(1, 0) / torch.max(torch.abs(rosette)) * torch.pi
+    k0 = sampled.reshape(1, 1, -1)
+    dcf = calc_density_compensation_function(rosette, (img_size, img_size))
+    rosette = rosette.permute(1, 0)
+    kbnufft.nufft.set_dims(sampled.shape[-1], (img_size, img_size), torch.device("cpu"), Nb=1)
+    kbnufft.nufft.precompute(rosette)
+    I0 = kbnufft.adjoint(rosette, (k0 * dcf).squeeze(0))
+    return I0.unsqueeze(0)
 
 
 def compute_derivatives(traj, dt):

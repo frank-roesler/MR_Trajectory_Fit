@@ -2,7 +2,7 @@ import math
 
 
 train_steps = 1000
-lr = 1e-3
+lr = 1e-4
 zero_filling = True
 
 timesteps = 128

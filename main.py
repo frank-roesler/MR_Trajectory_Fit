@@ -5,6 +5,7 @@ from utils import (
     img_loss,
     sample_k_space_values,
     reconstruct_img,
+    reconstruct_img2,
     TrainPlotter,
 )
 import matplotlib.pyplot as plt
@@ -23,7 +24,7 @@ fft = Fop * phantom
 
 t = torch.linspace(0, duration, steps=timesteps).unsqueeze(1)  # (timesteps, 1)
 model = FourierCurve(tmin=0, tmax=torch.max(t), initial_max=kmax_traj, n_coeffs=model_size)
-optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
 losses = []
 plotter = TrainPlotter(img_size)
@@ -33,11 +34,11 @@ for step in range(train_steps):
     grad_loss, slew_loss = grad_slew_loss(traj, dt, grad_max, slew_rate, gamma)
 
     rosette, sampled, fft = sample_k_space_values(fft, rosette, kmax_img, zero_filling)
-    recon = reconstruct_img(rosette, sampled, img_size)
-    recon = final_FT_scaling * torch.flip(torch.rot90(recon.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
+    recon = reconstruct_img2(rosette, sampled, img_size)
+    recon = 0.01 * torch.flip(torch.rot90(recon.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
 
     L2_loss = img_loss(recon, phantom)
-    total_loss = L2_loss + 1e-6 * grad_loss + 1e-7 * slew_loss
+    total_loss = L2_loss  # + 1e-6 * grad_loss + 1e-7 * slew_loss
 
     losses.append(total_loss.item())
     optimizer.zero_grad()
