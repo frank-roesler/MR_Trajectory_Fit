@@ -45,7 +45,7 @@ for step in range(10 * train_steps):
     rosette, kmax_traj = make_rosette(traj, n_petals, kmax_img, zero_filling=zero_filling)
 
     rosette, sampled, fft = sample_k_space_values(fft, rosette, kmax_img, zero_filling)
-    recon = reconstruct_img2(rosette, sampled, img_size, final_FT_scaling * res / math.sqrt(kmax_traj * 2 * FoV))
+    recon = reconstruct_img2(rosette, sampled, img_size, final_FT_scaling * math.sqrt(res / (kmax_traj * 2 * FoV)))
 
     image_loss = img_loss(recon, phantom)
     total_loss = image_loss + grad_loss + slew_loss
