@@ -94,7 +94,7 @@ def threshold_loss(x, threshold):
     return threshold_loss**2
 
 
-def grad_slew_loss(traj, dt, grad_max, slew_rate, gamma):
+def grad_slew_loss(traj, dt, grad_max, slew_rate, gamma, grad_loss_weight, slew_loss_weight):
     """Compute a loss based on the slew rate of the trajectory.
     traj: (timesteps, 2) tensor
     dt: time step size (scalar)
@@ -103,7 +103,7 @@ def grad_slew_loss(traj, dt, grad_max, slew_rate, gamma):
     grad, slew = compute_derivatives(traj, dt)
     grad_loss = threshold_loss(1000 / gamma * grad, grad_max)
     slew_loss = threshold_loss(1000 / gamma * slew, slew_rate)
-    return grad_loss.sum(), slew_loss.sum()
+    return grad_loss_weight * grad_loss.sum(), slew_loss_weight * slew_loss.sum()
 
 
 def mse_loss(img, target):
@@ -123,7 +123,9 @@ class MySSIMLoss(nn.Module):
 class TrainPlotter:
     def __init__(self, img_size):
         fig_loss, (ax_loss, ax_img, ax_traj) = plt.subplots(1, 3, figsize=(15, 4))
-        (loss_line,) = ax_loss.semilogy([], [], label="Total Loss", linewidth=0.7)
+        (grad_loss_line,) = ax_loss.semilogy([], [], label="Grad Loss", linewidth=0.7)
+        (slew_loss_line,) = ax_loss.semilogy([], [], label="Slew Loss", linewidth=0.7)
+        (img_loss_line,) = ax_loss.semilogy([], [], label="Image Loss", linewidth=0.7)
         ax_loss.set_xlabel("Step")
         ax_loss.set_ylabel("Loss")
         ax_loss.set_title("Running Loss")
@@ -134,17 +136,21 @@ class TrainPlotter:
         (traj_line,) = ax_traj.plot([], [], label="trajectory", linewidth=0.7)
         ax_traj.set_title("Trajectory")
         plt.show(block=False)
-        self.loss_line = loss_line
+        self.grad_loss_line = grad_loss_line
+        self.slew_loss_line = slew_loss_line
+        self.img_loss_line = img_loss_line
         self.im_recon = im_recon
         self.traj_line = traj_line
         self.ax_loss = ax_loss
         self.ax_traj = ax_traj
         self.ax_img = ax_img
 
-    def update(self, step, losses, recon, traj):
-        self.loss_line.set_data(range(len(losses)), losses)
-        self.ax_loss.relim()
-        self.ax_loss.autoscale_view()
+    def update(self, step, grad_losses, img_losses, slew_losses, recon, traj):
+        self.img_loss_line.set_data(range(len(img_losses)), img_losses)
+        self.grad_loss_line.set_data(range(len(grad_losses)), grad_losses)
+        self.slew_loss_line.set_data(range(len(slew_losses)), slew_losses)
+        self.ax_loss.set_ylim(0.9 * min(img_losses), 1.1 * max(img_losses))
+        self.ax_loss.set_xlim(0, len(img_losses))
         img = recon.abs().detach().cpu().numpy()
         self.im_recon.set_data(img)
         self.im_recon.set_clim(vmin=0, vmax=1)
@@ -153,3 +159,59 @@ class TrainPlotter:
         self.ax_traj.autoscale_view()
         self.ax_img.set_title(f"Recon (abs) Step {step+1}")
         plt.pause(0.01)
+
+    def print_info(self, step, train_steps, image_loss, grad_loss, slew_loss, total_loss):
+        print(f"Step {step+1}/{train_steps}")
+        print(f"  Image loss: {image_loss.item():.6f}")
+        print(f"  Gradient loss: {grad_loss.item():.6f}")
+        print(f"  Slew rate loss: {slew_loss.item():.6f}")
+        print(f"  Total loss: {total_loss.item():.6f}")
+
+
+def plot_pixel_rosette(traj, fft, img_size, ax=None):
+    # Sample FFT at trajectory locations:
+    sampled_coord_x = torch.round((traj[0, 0, :, 0] / 2 - 1) * (img_size - 1) + img_size / 2)
+    sampled_coord_y = torch.round((traj[0, 0, :, 1] / 2 - 1) * (img_size - 1) + img_size / 2)
+    pixel_curve = torch.zeros(img_size, img_size)
+    pixel_curve[sampled_coord_y.long(), sampled_coord_x.long()] = 1.0
+    sampled_from_pixels = fft[0, 0, sampled_coord_y.long(), sampled_coord_x.long()]
+    sampled_from_pixels[-2:] *= 0
+    if ax is not None:
+        ax.imshow(pixel_curve[img_size // 4 : 3 * img_size // 4, img_size // 4 : 3 * img_size // 4].detach().numpy())
+    else:
+        plt.figure()
+        plt.imshow(pixel_curve.detach().numpy())
+        plt.show()
+    return sampled_from_pixels
+
+
+def final_plots(phantom, recon, initial_recon, losses, rosette, kmax_img, final_FT_scaling, fft):
+    fig, ax = plt.subplots(2, 3, figsize=(15, 8))
+    im = ax[0, 0].imshow(phantom.numpy(), cmap="gray")
+    ax[0, 0].set_title("Phantom")
+    ax[0, 0].axis("off")
+    fig.colorbar(im, ax=ax[0, 0])
+
+    im = ax[0, 1].imshow(recon.abs().detach().numpy(), cmap="gray")
+    ax[0, 1].set_title("Recon")
+    ax[0, 1].axis("off")
+    fig.colorbar(im, ax=ax[0, 1])
+
+    im = ax[0, 2].imshow(final_FT_scaling / 1000 * torch.flip(torch.rot90(initial_recon.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze().detach().numpy(), cmap="gray")
+    ax[0, 2].set_title("Initial Recon")
+    ax[0, 2].axis("off")
+    fig.colorbar(im, ax=ax[0, 2])
+
+    im = ax[1, 0].imshow((recon.abs() - phantom).detach().numpy(), cmap="gray")
+    ax[1, 0].set_title("Phantom - Recon")
+    ax[1, 0].axis("off")
+    fig.colorbar(im, ax=ax[1, 0])
+
+    im = ax[1, 1].semilogy(range(len(losses)), losses, linewidth=0.7)
+    ax[1, 1].set_title("Loss")
+
+    ax[1, 2].set_title("Pixel rosette (zoomed)")
+    ax[1, 2].axis("off")
+    sampled_from_pixels = plot_pixel_rosette(rosette / kmax_img, fft, phantom.shape[-1], ax=ax[1, 2])
+    plt.show()
+    return sampled_from_pixels

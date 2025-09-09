@@ -1,8 +1,10 @@
 import math
 
 
-train_steps = 2000
-lr = 5e-4
+train_steps = 1000
+lr = 1e-4
+grad_loss_weight = 1e-6
+slew_loss_weight = 1e-7
 zero_filling = True
 
 timesteps = 128
