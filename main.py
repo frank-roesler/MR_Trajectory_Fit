@@ -9,6 +9,7 @@ from utils import (
     reconstruct_img2,
     TrainPlotter,
     final_plots,
+    compute_derivatives,
 )
 import matplotlib.pyplot as plt
 from mirtorch.linear import FFTCn
@@ -35,9 +36,7 @@ with torch.no_grad():
     rosette, sampled, _ = sample_k_space_values(fft, rosette, kmax_img, zero_filling)
     initial_recon = reconstruct_img2(rosette, sampled, img_size)
 
-grad_losses = []
-slew_losses = []
-image_losses = []
+
 plotter = TrainPlotter(img_size)
 best_loss = float("inf")
 for step in range(10 * train_steps):
@@ -52,26 +51,29 @@ for step in range(10 * train_steps):
     image_loss = img_loss(recon, phantom)
     total_loss = image_loss + grad_loss + slew_loss
 
-    grad_losses.append(grad_loss.item())
-    image_losses.append(image_loss.item())
-    slew_losses.append(slew_loss.item())
+    plotter.print_info(step, train_steps, image_loss.item(), grad_loss.item(), slew_loss.item(), best_loss)
+    if total_loss.item() < best_loss:
+        if step >= train_steps:
+            break
+        best_loss = total_loss.item()
+
     optimizer.zero_grad()
     total_loss.backward()
     optimizer.step()
 
-    if step % 10 == 0:
-        plotter.update(step, grad_losses, image_losses, slew_losses, recon, traj)
-    plotter.print_info(step, train_steps, image_loss, grad_loss, slew_loss, total_loss)
-    if step >= train_steps and total_loss < best_loss:
-        break
+    plotter.update(step, grad_loss.item(), image_loss.item(), slew_loss.item(), total_loss.item(), recon, traj)
 
+grad, slew = compute_derivatives(traj, dt)
+print("=" * 100)
+print("SLEW RATE:", 1000 / gamma * slew.max(dim=0).values)
+print("=" * 100)
 
 # region Plot results:
 sampled_from_pixels = final_plots(
     phantom,
     recon,
     initial_recon,
-    [g + i + s for g, i, s in zip(grad_losses, image_losses, slew_losses)],
+    plotter.total_losses,
     rosette,
     kmax_img,
     final_FT_scaling,
@@ -83,10 +85,12 @@ sampled_from_pixels = final_plots(
 # plt.legend()
 # plt.show()
 
-# fig, ax = plt.subplots(1, 2, figsize=(11, 5))
-# ax[0].plot(rosette[0, 0, :-2, 0].detach().numpy(), rosette[0, 0, :-2, 1].detach().numpy(), linewidth=0.7)
-# ax[1].plot(traj[:, 0].detach().numpy(), traj[:, 1].detach().numpy(), linewidth=0.7)
-# plt.show()
+fig, ax = plt.subplots(1, 2, figsize=(11, 5))
+ax[0].plot(rosette[0, 0, :-2, 0].detach().numpy(), rosette[0, 0, :-2, 1].detach().numpy(), linewidth=0.7)
+ax[1].plot(traj[:, 0].detach().numpy(), traj[:, 1].detach().numpy(), linewidth=0.7)
+ax[1].set_aspect("equal", "box")
+ax[0].set_aspect("equal", "box")
+plt.show()
 
 # fig, ax = plt.subplots(1, 2)
 # im = ax[0].imshow(phantom[:, :].numpy(), cmap="gray")

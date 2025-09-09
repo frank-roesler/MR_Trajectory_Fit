@@ -122,14 +122,21 @@ class MySSIMLoss(nn.Module):
 
 class TrainPlotter:
     def __init__(self, img_size):
-        fig_loss, (ax_loss, ax_img, ax_traj) = plt.subplots(1, 3, figsize=(15, 4))
-        (grad_loss_line,) = ax_loss.semilogy([], [], label="Grad Loss", linewidth=0.7)
-        (slew_loss_line,) = ax_loss.semilogy([], [], label="Slew Loss", linewidth=0.7)
-        (img_loss_line,) = ax_loss.semilogy([], [], label="Image Loss", linewidth=0.7)
+        plt.rc("xtick", labelsize=8)
+        plt.rc("ytick", labelsize=8)
+        fig, (ax_loss, ax_img, ax_traj) = plt.subplots(1, 3, figsize=(15, 4), constrained_layout=True)
+        ax_total_loss = ax_loss.twinx()
+        (grad_loss_line,) = ax_loss.semilogy([], [], label="Grad Loss", linewidth=0.7, color="r")
+        (slew_loss_line,) = ax_loss.semilogy([], [], label="Slew Loss", linewidth=0.7, color="g")
+        (img_loss_line,) = ax_loss.semilogy([], [], label="Image Loss", linewidth=0.7, color="b")
+        (total_loss_line,) = ax_total_loss.semilogy([], [], label="Total Loss", linewidth=0.7, color="k")
         ax_loss.set_xlabel("Step")
-        ax_loss.set_ylabel("Loss")
+        ax_loss.set_ylabel("Individual Losses")
         ax_loss.set_title("Running Loss")
-        ax_loss.legend()
+        ax_total_loss.set_ylabel("Total Loss")
+        lns = [grad_loss_line, slew_loss_line, img_loss_line, total_loss_line]
+        labs = [l.get_label() for l in lns]
+        ax_loss.legend(lns, labs, loc=0, prop={"size": 6})
         im_recon = ax_img.imshow(torch.zeros((img_size, img_size)).numpy(), cmap="gray")
         ax_img.set_title("Recon (abs)")
         ax_img.axis("off")
@@ -139,33 +146,51 @@ class TrainPlotter:
         self.grad_loss_line = grad_loss_line
         self.slew_loss_line = slew_loss_line
         self.img_loss_line = img_loss_line
+        self.total_loss_line = total_loss_line
         self.im_recon = im_recon
         self.traj_line = traj_line
         self.ax_loss = ax_loss
+        self.ax_total_loss = ax_total_loss
         self.ax_traj = ax_traj
         self.ax_img = ax_img
+        self.grad_losses = []
+        self.slew_losses = []
+        self.img_losses = []
+        self.total_losses = []
 
-    def update(self, step, grad_losses, img_losses, slew_losses, recon, traj):
-        self.img_loss_line.set_data(range(len(img_losses)), img_losses)
-        self.grad_loss_line.set_data(range(len(grad_losses)), grad_losses)
-        self.slew_loss_line.set_data(range(len(slew_losses)), slew_losses)
-        self.ax_loss.set_ylim(0.9 * min(img_losses), 1.1 * max(img_losses))
-        self.ax_loss.set_xlim(0, len(img_losses))
-        img = recon.abs().detach().cpu().numpy()
-        self.im_recon.set_data(img)
-        self.im_recon.set_clim(vmin=0, vmax=1)
-        self.traj_line.set_data(traj[:, 0].detach().numpy(), traj[:, 1].detach().numpy())
-        self.ax_traj.relim()
-        self.ax_traj.autoscale_view()
-        self.ax_img.set_title(f"Recon (abs) Step {step+1}")
-        plt.pause(0.01)
+    def update(self, step, grad_loss, img_loss, slew_loss, total_loss, recon, traj):
+        self.grad_losses.append(grad_loss)
+        self.img_losses.append(img_loss)
+        self.slew_losses.append(slew_loss)
+        self.total_losses.append(total_loss)
+        if step % 10 == 0:
+            self.img_loss_line.set_data(range(len(self.img_losses)), self.img_losses)
+            self.grad_loss_line.set_data(range(len(self.grad_losses)), self.grad_losses)
+            self.slew_loss_line.set_data(range(len(self.slew_losses)), self.slew_losses)
+            self.total_loss_line.set_data(range(len(self.img_losses)), self.total_losses)
+            self.ax_total_loss.relim()
+            self.ax_total_loss.autoscale_view()
+            self.ax_loss.set_ylim(0.9 * min(self.img_losses), 1.1 * max(self.img_losses))
+            # self.ax_loss.set_xlim(0, len(self.img_losses))
+            # self.ax_total_loss.set_xlim(0, len(self.img_losses))
+            img = recon.abs().detach().cpu().numpy()
+            self.im_recon.set_data(img)
+            self.im_recon.set_clim(vmin=0, vmax=1)
+            self.traj_line.set_data(traj[:, 0].detach().numpy(), traj[:, 1].detach().numpy())
+            self.ax_traj.relim()
+            self.ax_traj.autoscale_view()
+            self.ax_traj.set_aspect("equal", "box")
+            self.ax_img.set_title(f"Recon (abs) Step {step+1}")
+            plt.pause(0.01)
 
-    def print_info(self, step, train_steps, image_loss, grad_loss, slew_loss, total_loss):
+    def print_info(self, step, train_steps, image_loss, grad_loss, slew_loss, best_loss):
         print(f"Step {step+1}/{train_steps}")
-        print(f"  Image loss: {image_loss.item():.6f}")
-        print(f"  Gradient loss: {grad_loss.item():.6f}")
-        print(f"  Slew rate loss: {slew_loss.item():.6f}")
-        print(f"  Total loss: {total_loss.item():.6f}")
+        print(f"  Image loss: {image_loss:.6f}")
+        print(f"  Gradient loss: {grad_loss:.6f}")
+        print(f"  Slew rate loss: {slew_loss:.6f}")
+        print(f"  Total loss: {image_loss+grad_loss+slew_loss:.6f}")
+        print(f"  Best loss: {best_loss:.6f}")
+        print("-" * 100)
 
 
 def plot_pixel_rosette(traj, fft, img_size, ax=None):
