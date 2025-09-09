@@ -1,12 +1,14 @@
 import torch
 import odl
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torchkbnufft import calc_density_compensation_function
 from Bjork.sys_op import NuSense_om
 from mirtorch.linear import NuSense
 import matplotlib.pyplot as plt
 import Nufftbindings.nufftbindings.kbnufft as kbnufft
+from kornia.losses import SSIMLoss
 
 
 def get_phantom(size=(1024, 1024)):
@@ -40,16 +42,16 @@ def make_rosette(traj, n_petals, kmax_img, zero_filling=True):
     return rosette
 
 
-def sample_k_space_values(fft, traj, kmax_img, zero_filling):
-    traj = traj.reshape(1, 1, traj.shape[0], 2)
+def sample_k_space_values(fft, rosette, kmax_img, zero_filling):
+    rosette = rosette.reshape(1, 1, rosette.shape[0], 2)
     img_size = fft.shape[-1]
     fft = fft.reshape(1, 1, img_size, img_size)
-    sampled_r = F.grid_sample(fft.real, traj / kmax_img, mode="bicubic", align_corners=True)
-    sampled_i = F.grid_sample(fft.imag, traj / kmax_img, mode="bicubic", align_corners=True)
+    sampled_r = F.grid_sample(fft.real, rosette / kmax_img, mode="bicubic", align_corners=True)
+    sampled_i = F.grid_sample(fft.imag, rosette / kmax_img, mode="bicubic", align_corners=True)
     sampled = torch.complex(sampled_r, sampled_i).squeeze(0)
     if zero_filling:
         sampled[:, :, -2:] *= 0  # zero filling
-    return traj, sampled, fft
+    return rosette, sampled, fft
 
 
 def reconstruct_img(rosette, sampled, img_size):
@@ -104,8 +106,18 @@ def grad_slew_loss(traj, dt, grad_max, slew_rate, gamma):
     return grad_loss.sum(), slew_loss.sum()
 
 
-def img_loss(img, target):
+def mse_loss(img, target):
     return torch.mean((img - target) ** 2)
+
+
+class MySSIMLoss(nn.Module):
+    def __init__(self, window_size=11, reduction="mean", max_val=1.0):
+        super(MySSIMLoss, self).__init__()
+        self.ssim = SSIMLoss(window_size=window_size, reduction=reduction, max_val=max_val)
+        self.L1_loss = nn.L1Loss()
+
+    def forward(self, img, target):
+        return 1.0 - self.ssim(img.unsqueeze(0).unsqueeze(0), target.unsqueeze(0).unsqueeze(0)) + 0.1 * self.L1_loss(img, target)
 
 
 class TrainPlotter:
