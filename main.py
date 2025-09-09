@@ -32,34 +32,33 @@ img_loss = mse_loss
 
 with torch.no_grad():
     traj = model(t)
-    rosette = make_rosette(traj, n_petals, kmax_img, zero_filling=zero_filling)
+    rosette, kmax_traj = make_rosette(traj, n_petals, kmax_img, zero_filling=zero_filling)
     rosette, sampled, _ = sample_k_space_values(fft, rosette, kmax_img, zero_filling)
-    initial_recon = reconstruct_img2(rosette, sampled, img_size)
+    initial_recon = reconstruct_img2(rosette, sampled, img_size, final_FT_scaling)
 
 
 plotter = TrainPlotter(img_size)
 best_loss = float("inf")
 for step in range(10 * train_steps):
     traj = model(t)  # (timesteps, 2)
-    rosette = make_rosette(traj, n_petals, kmax_img, zero_filling=zero_filling)
+    grad_loss, slew_loss = grad_slew_loss(traj, dt, grad_max, slew_rate, gamma, grad_loss_weight, slew_loss_weight)
+    rosette, kmax_traj = make_rosette(traj, n_petals, kmax_img, zero_filling=zero_filling)
 
     rosette, sampled, fft = sample_k_space_values(fft, rosette, kmax_img, zero_filling)
-    recon = reconstruct_img2(rosette, sampled, img_size)
-    recon = final_FT_scaling / 1000 * torch.flip(torch.rot90(recon.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
+    recon = reconstruct_img2(rosette, sampled, img_size, 2 * math.sqrt(2 * img_size / (kmax_traj * 2 * FoV)))
 
-    grad_loss, slew_loss = grad_slew_loss(traj, dt, grad_max, slew_rate, gamma, grad_loss_weight, slew_loss_weight)
     image_loss = img_loss(recon, phantom)
     total_loss = image_loss + grad_loss + slew_loss
+
+    optimizer.zero_grad()
+    total_loss.backward()
+    optimizer.step()
 
     plotter.print_info(step, train_steps, image_loss.item(), grad_loss.item(), slew_loss.item(), best_loss)
     if total_loss.item() < best_loss:
         if step >= train_steps:
             break
         best_loss = total_loss.item()
-
-    optimizer.zero_grad()
-    total_loss.backward()
-    optimizer.step()
 
     plotter.update(step, grad_loss.item(), image_loss.item(), slew_loss.item(), total_loss.item(), recon, traj)
 

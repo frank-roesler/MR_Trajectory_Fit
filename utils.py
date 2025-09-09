@@ -39,7 +39,8 @@ def make_rosette(traj, n_petals, kmax_img, zero_filling=True):
         corners[1] *= -kmax_img
         rotated_trajectories.append(corners)
     rosette = torch.cat(rotated_trajectories, dim=0)
-    return rosette
+    max_norm = traj.norm(dim=1).max()
+    return rosette, max_norm
 
 
 def sample_k_space_values(fft, rosette, kmax_img, zero_filling):
@@ -54,7 +55,7 @@ def sample_k_space_values(fft, rosette, kmax_img, zero_filling):
     return rosette, sampled, fft
 
 
-def reconstruct_img(rosette, sampled, img_size):
+def reconstruct_img(rosette, sampled, img_size, scaling):
     s0 = torch.ones(1, 1, img_size, img_size) + 0j
     rosette0 = rosette.squeeze().permute(1, 0) / torch.max(torch.abs(rosette)) * torch.pi
     k0 = sampled.reshape(1, 1, -1)
@@ -62,18 +63,21 @@ def reconstruct_img(rosette, sampled, img_size):
     Nop = NuSense_om(s0, rosette0)
     # Nop = NuSense(s0, rosette0)
     I0 = Nop.H * (dcf * k0)
-    return I0
+    I0 = torch.flip(torch.rot90(I0.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
+    return I0 * scaling
 
 
-def reconstruct_img2(rosette, sampled, img_size):
+def reconstruct_img2(rosette, sampled, img_size, scaling):
     rosette = rosette.squeeze().permute(1, 0) / torch.max(torch.abs(rosette)) * torch.pi
     k0 = sampled.reshape(1, 1, -1)
     dcf = calc_density_compensation_function(rosette, (img_size, img_size))
     rosette = rosette.permute(1, 0)
     kbnufft.nufft.set_dims(sampled.shape[-1], (img_size, img_size), torch.device("cpu"), Nb=1)
     kbnufft.nufft.precompute(rosette)
-    I0 = kbnufft.adjoint(rosette, (k0 * dcf).squeeze(0))
-    return I0.unsqueeze(0)
+    I0 = kbnufft.adjoint(rosette, (k0 * dcf).squeeze(0)).unsqueeze(0)
+    I0 = torch.flip(torch.rot90(I0, k=1, dims=(2, 3)), dims=[2]).squeeze()
+    I0 = I0 * scaling
+    return I0.abs()
 
 
 def compute_derivatives(traj, dt):
@@ -142,6 +146,7 @@ class TrainPlotter:
         ax_img.axis("off")
         (traj_line,) = ax_traj.plot([], [], label="trajectory", linewidth=0.7)
         ax_traj.set_title("Trajectory")
+        fig.colorbar(im_recon, ax=ax_img)
         plt.show(block=False)
         self.grad_loss_line = grad_loss_line
         self.slew_loss_line = slew_loss_line
@@ -222,7 +227,7 @@ def final_plots(phantom, recon, initial_recon, losses, rosette, kmax_img, final_
     ax[0, 1].axis("off")
     fig.colorbar(im, ax=ax[0, 1])
 
-    im = ax[0, 2].imshow(final_FT_scaling / 1000 * torch.flip(torch.rot90(initial_recon.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze().detach().numpy(), cmap="gray")
+    im = ax[0, 2].imshow(initial_recon.squeeze().detach().numpy(), cmap="gray")
     ax[0, 2].set_title("Initial Recon")
     ax[0, 2].axis("off")
     fig.colorbar(im, ax=ax[0, 2])

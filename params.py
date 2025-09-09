@@ -3,8 +3,8 @@ import math
 
 train_steps = 1000
 lr = 2e-4
-grad_loss_weight = 1e-6
-slew_loss_weight = 1e-7
+grad_loss_weight = 1e-3
+slew_loss_weight = 1e-4
 zero_filling = True
 
 timesteps = 128
@@ -12,7 +12,7 @@ duration = 0.5  # ms
 dt = duration / (timesteps - 1)
 
 grad_max = 135
-slew_rate = 240
+slew_rate = 250
 gamma = 42.575575  # Gyromagnetic ratio in MHz/T
 
 img_size = 512  # pixels
