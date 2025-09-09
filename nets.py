@@ -7,7 +7,7 @@ class FourierPulseOpt(nn.Module):
 
     def __init__(self, t_min, t_max, n_coeffs=101, initialization="cos"):
         super().__init__()
-        p = 1e-3 * torch.randn((2 * n_coeffs + 1, 2))
+        p = 1e-4 * torch.randn((2 * n_coeffs + 1, 2))
         if initialization == "cos":
             p[n_coeffs + 1, 1] = 1.0
         elif initialization == "sin":

@@ -51,7 +51,7 @@ class Nufft(baseNUFFT):
         else:
             y = y[:, None].type(self.torch_dtype)  # batch,K,r/i
         xi = xi.permute(1, 0).type(self.torch_dtype)
-        f = self.nufft_adj_ob(y, xi, norm="ortho")[:, 0]
+        f = self.nufft_adj_ob(y, xi, norm=None)[:, 0]
         return f
 
     def _backward_forward2D(self, f, g, xi):

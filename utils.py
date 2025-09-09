@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchkbnufft import calc_density_compensation_function
-from Bjork.sys_op import NuSense_om
 from mirtorch.linear import NuSense
 import matplotlib.pyplot as plt
 import Nufftbindings.nufftbindings.kbnufft as kbnufft
@@ -60,8 +59,7 @@ def reconstruct_img(rosette, sampled, img_size, scaling):
     rosette0 = rosette.squeeze().permute(1, 0) / torch.max(torch.abs(rosette)) * torch.pi
     k0 = sampled.reshape(1, 1, -1)
     dcf = calc_density_compensation_function(rosette0, (img_size, img_size))
-    Nop = NuSense_om(s0, rosette0)
-    # Nop = NuSense(s0, rosette0)
+    Nop = NuSense(s0, rosette0, norm=None)
     I0 = Nop.H * (dcf * k0)
     I0 = torch.flip(torch.rot90(I0.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
     return I0 * scaling

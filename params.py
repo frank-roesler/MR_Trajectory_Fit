@@ -2,9 +2,9 @@ import math
 
 
 train_steps = 1000
-lr = 2e-4
-grad_loss_weight = 1e-3
-slew_loss_weight = 1e-4
+lr = 1e-4
+grad_loss_weight = 1e-6
+slew_loss_weight = 1e-7
 zero_filling = True
 
 timesteps = 128
@@ -20,9 +20,9 @@ FoV = 224  # mm
 res = 50
 n_petals = 80
 
-model_size = 21  # number of Fourier coefficients
+model_size = 11  # number of Fourier coefficients
 
 kmax_traj = res / (2 * FoV)  # 1/m
 kmax_img = img_size / (2 * FoV)  # 1/m
 
-final_FT_scaling = 2 * math.sqrt(2 * img_size / res)
+final_FT_scaling = 4 * math.sqrt(img_size / res) / 10000
