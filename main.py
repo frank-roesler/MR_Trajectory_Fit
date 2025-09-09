@@ -44,7 +44,7 @@ for step in range(train_steps):
 
     rosette, sampled, fft = sample_k_space_values(fft, rosette, kmax_img, zero_filling)
     recon = reconstruct_img2(rosette, sampled, img_size)
-    recon = 0.01 * torch.flip(torch.rot90(recon.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
+    recon = final_FT_scaling / 1000 * torch.flip(torch.rot90(recon.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
     print(f"Recon max: {torch.max(recon)}")
     print(f"Recon min: {torch.min(recon)}")
 
@@ -77,7 +77,7 @@ ax[0, 1].set_title("Recon")
 ax[0, 1].axis("off")
 fig.colorbar(im, ax=ax[0, 1])
 
-im = ax[0, 2].imshow(0.01 * torch.flip(torch.rot90(initial_recon.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze().detach().numpy(), cmap="gray")
+im = ax[0, 2].imshow(final_FT_scaling / 1000 * torch.flip(torch.rot90(initial_recon.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze().detach().numpy(), cmap="gray")
 ax[0, 2].set_title("Initial Recon")
 ax[0, 2].axis("off")
 fig.colorbar(im, ax=ax[0, 2])
