@@ -49,5 +49,6 @@ class FourierCurve(nn.Module):
         return super().to(device)
 
     def forward(self, x):
+        x = x[:-1, :]
         out = torch.cat([self.pulses[0](x) - self.pulses[0](0), self.pulses[1](x) - self.pulses[1](0)], dim=-1)
         return out * self.scaling

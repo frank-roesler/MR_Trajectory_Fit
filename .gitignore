@@ -4,3 +4,4 @@ aux/
 *.ipynb
 .venv/
 __pycache__/
+results/

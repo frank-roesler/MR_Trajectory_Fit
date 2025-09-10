@@ -8,6 +8,7 @@ from mirtorch.linear import NuSense
 import matplotlib.pyplot as plt
 import Nufftbindings.nufftbindings.kbnufft as kbnufft
 from kornia.losses import SSIMLoss
+import os
 
 
 def get_phantom(size=(1024, 1024)):
@@ -84,7 +85,7 @@ def compute_derivatives(traj, dt):
     dt: time step size (scalar)
     Returns: d_traj, dd_traj
     """
-    traj = traj[:-1, :]
+    # traj = traj[:-1, :]
     d_traj = (torch.roll(traj, shifts=-1, dims=0) - traj) / dt
     dd_traj = (torch.roll(d_traj, shifts=-1, dims=0) - d_traj) / dt
     return d_traj, dd_traj
@@ -103,8 +104,8 @@ def grad_slew_loss(traj, dt, grad_max, slew_rate, gamma, grad_loss_weight, slew_
     Returns: slew_loss (scalar)
     """
     grad, slew = compute_derivatives(traj, dt)
-    grad_loss = threshold_loss(1000 / gamma * grad, grad_max)
-    slew_loss = threshold_loss(1000 / gamma * slew, slew_rate)
+    grad_loss = threshold_loss(grad, grad_max * gamma / 1000)
+    slew_loss = threshold_loss(slew, slew_rate * gamma / 1000)
     return grad_loss_weight * grad_loss.sum(), slew_loss_weight * slew_loss.sum()
 
 
@@ -126,7 +127,7 @@ class TrainPlotter:
     def __init__(self, img_size):
         plt.rc("xtick", labelsize=8)
         plt.rc("ytick", labelsize=8)
-        fig, (ax_loss, ax_img, ax_traj) = plt.subplots(1, 3, figsize=(15, 4), constrained_layout=True)
+        self.fig, (ax_loss, ax_img, ax_traj) = plt.subplots(1, 3, figsize=(15, 4), constrained_layout=True)
         ax_total_loss = ax_loss.twinx()
         (grad_loss_line,) = ax_loss.semilogy([], [], label="Grad Loss", linewidth=0.7, color="r")
         (slew_loss_line,) = ax_loss.semilogy([], [], label="Slew Loss", linewidth=0.7, color="g")
@@ -142,9 +143,9 @@ class TrainPlotter:
         im_recon = ax_img.imshow(torch.zeros((img_size, img_size)).numpy(), cmap="gray")
         ax_img.set_title("Recon (abs)")
         ax_img.axis("off")
-        (traj_line,) = ax_traj.plot([], [], label="trajectory", linewidth=0.7)
+        (traj_line,) = ax_traj.plot([], [], label="trajectory", linewidth=0.7, marker=".", markersize=3)
         ax_traj.set_title("Trajectory")
-        fig.colorbar(im_recon, ax=ax_img)
+        self.fig.colorbar(im_recon, ax=ax_img)
         plt.show(block=False)
         self.grad_loss_line = grad_loss_line
         self.slew_loss_line = slew_loss_line
@@ -195,6 +196,30 @@ class TrainPlotter:
         print(f"  Best loss: {best_loss:.6f}")
         print("-" * 100)
 
+    def export_figure(self, path):
+        self.fig.savefig(os.path.join(path, "train_figure.png"))
+
+
+def save_checkpoint(path, model, traj, params):
+    os.makedirs(path, exist_ok=True)
+    dt = params["duration"] / (params["timesteps"] - 1)
+    dtraj, ddtraj = compute_derivatives(traj, dt)
+    slew = 1000 / params["gamma"] * ddtraj.max(dim=0).values
+    grad = 1000 / params["gamma"] * dtraj.max(dim=0).values
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "params": params,
+            "slew_rate": slew,
+            "gradient": grad,
+        },
+        os.path.join(path, "checkpoint.pt"),
+    )
+    print("=" * 100)
+    print("CHECKPOINT SAVED")
+    print("Slew Rate:", slew)
+    print("=" * 100)
+
 
 def plot_pixel_rosette(traj, fft, img_size, ax=None):
     # Sample FFT at trajectory locations:
@@ -213,7 +238,7 @@ def plot_pixel_rosette(traj, fft, img_size, ax=None):
     return sampled_from_pixels
 
 
-def final_plots(phantom, recon, initial_recon, losses, rosette, kmax_img, final_FT_scaling, fft):
+def final_plots(phantom, recon, initial_recon, losses, traj, show=True, export=False, export_path=None):
     fig, ax = plt.subplots(2, 3, figsize=(15, 8))
     im = ax[0, 0].imshow(phantom.numpy(), cmap="gray")
     ax[0, 0].set_title("Phantom")
@@ -238,8 +263,10 @@ def final_plots(phantom, recon, initial_recon, losses, rosette, kmax_img, final_
     im = ax[1, 1].semilogy(range(len(losses)), losses, linewidth=0.7)
     ax[1, 1].set_title("Loss")
 
-    ax[1, 2].set_title("Pixel rosette (zoomed)")
-    ax[1, 2].axis("off")
-    sampled_from_pixels = plot_pixel_rosette(rosette / kmax_img, fft, phantom.shape[-1], ax=ax[1, 2])
-    plt.show()
-    return sampled_from_pixels
+    ax[1, 2].plot(traj[:, 0].detach().numpy(), traj[:, 1].detach().numpy(), linewidth=0.7, marker=".", markersize=3)
+    ax[1, 2].set_title("Trajectory")
+    if show:
+        plt.show()
+    if export and export_path is not None:
+        plt.savefig(os.path.join(export_path, "final_figure.png"))
+        plt.close()
