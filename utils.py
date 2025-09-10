@@ -9,12 +9,21 @@ import matplotlib.pyplot as plt
 import Nufftbindings.nufftbindings.kbnufft as kbnufft
 from kornia.losses import SSIMLoss
 import os
+from PIL import Image
+import numpy as np
 
 
-def get_phantom(size=(1024, 1024)):
+def get_phantom(size=(1024, 1024), type="shepp_logan"):
     """Generate a Shepp-Logan phantom as a PyTorch tensor."""
-    phantom = odl.phantom.shepp_logan(odl.uniform_discr([0, 0], [1, 1], size), modified=True)
-    phantom_np = phantom.asarray()
+    if type.lower() == "shepp_logan":
+        phantom = odl.phantom.shepp_logan(odl.uniform_discr([0, 0], [1, 1], size), modified=True)
+        phantom_np = phantom.asarray()
+    elif type.lower() == "guitar":
+        phantom = Image.open("guitar.jpg").convert("1").resize(size)
+        phantom_np = np.array(phantom) * 1.0
+    else:
+        phantom = Image.open("GLPU.png").resize(size)
+        phantom_np = np.array(phantom) / 255.0
     phantom_tensor = torch.from_numpy(phantom_np).float()
     return phantom_tensor
 
@@ -63,19 +72,20 @@ def reconstruct_img(rosette, sampled, img_size, scaling):
     Nop = NuSense(s0, rosette0, norm=None)
     I0 = Nop.H * (dcf * k0)
     I0 = torch.flip(torch.rot90(I0.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
-    return I0 * scaling
+    return I0
 
 
 def reconstruct_img2(rosette, sampled, img_size, scaling):
     rosette = rosette.squeeze().permute(1, 0) / torch.max(torch.abs(rosette)) * torch.pi
     k0 = sampled.reshape(1, 1, -1)
-    dcf = calc_density_compensation_function(rosette, (img_size, img_size))
+    dcf = calc_density_compensation_function(rosette[:, :-2], (img_size, img_size))
+    dcf = torch.cat([dcf, torch.zeros(1, 1, 2)], dim=-1)
     rosette = rosette.permute(1, 0)
     kbnufft.nufft.set_dims(sampled.shape[-1], (img_size, img_size), torch.device("cpu"), Nb=1)
     kbnufft.nufft.precompute(rosette)
     I0 = kbnufft.adjoint(rosette, (k0 * dcf).squeeze(0)).unsqueeze(0)
     I0 = torch.flip(torch.rot90(I0, k=1, dims=(2, 3)), dims=[2]).squeeze()
-    I0 = I0 * scaling
+    I0 = I0 * scaling / np.sqrt(sampled.shape[-1])
     return I0.abs()
 
 
@@ -113,6 +123,10 @@ def mse_loss(img, target):
     return torch.mean((img - target) ** 2)
 
 
+def l1_loss(img, target):
+    return torch.mean((img - target).abs())
+
+
 class MySSIMLoss(nn.Module):
     def __init__(self, window_size=11, reduction="mean", max_val=1.0):
         super(MySSIMLoss, self).__init__()
@@ -121,6 +135,14 @@ class MySSIMLoss(nn.Module):
 
     def forward(self, img, target):
         return 1.0 - self.ssim(img.unsqueeze(0).unsqueeze(0), target.unsqueeze(0).unsqueeze(0)) + 0.1 * self.L1_loss(img, target)
+
+
+def get_loss_fcn(name):
+    if name.upper() == "L1":
+        return l1_loss
+    if name.upper() == "SSIM":
+        return MySSIMLoss(window_size=11, reduction="mean", max_val=1.0)
+    return mse_loss
 
 
 class TrainPlotter:
@@ -145,7 +167,7 @@ class TrainPlotter:
         ax_img.axis("off")
         (traj_line,) = ax_traj.plot([], [], label="trajectory", linewidth=0.7, marker=".", markersize=3)
         ax_traj.set_title("Trajectory")
-        self.fig.colorbar(im_recon, ax=ax_img)
+        self.cbar = self.fig.colorbar(im_recon, ax=ax_img)
         plt.show(block=False)
         self.grad_loss_line = grad_loss_line
         self.slew_loss_line = slew_loss_line
@@ -175,11 +197,9 @@ class TrainPlotter:
             self.ax_total_loss.relim()
             self.ax_total_loss.autoscale_view()
             self.ax_loss.set_ylim(0.9 * min(self.img_losses), 1.1 * max(self.img_losses))
-            # self.ax_loss.set_xlim(0, len(self.img_losses))
-            # self.ax_total_loss.set_xlim(0, len(self.img_losses))
             img = recon.abs().detach().cpu().numpy()
             self.im_recon.set_data(img)
-            self.im_recon.set_clim(vmin=0, vmax=1)
+            self.im_recon.set_clim(vmin=0, vmax=img.max())
             self.traj_line.set_data(traj[:, 0].detach().numpy(), traj[:, 1].detach().numpy())
             self.ax_traj.relim()
             self.ax_traj.autoscale_view()
@@ -219,6 +239,7 @@ def save_checkpoint(path, model, traj, params):
     print("CHECKPOINT SAVED")
     print("Slew Rate:", slew)
     print("=" * 100)
+    return slew
 
 
 def plot_pixel_rosette(traj, fft, img_size, ax=None):
@@ -238,7 +259,7 @@ def plot_pixel_rosette(traj, fft, img_size, ax=None):
     return sampled_from_pixels
 
 
-def final_plots(phantom, recon, initial_recon, losses, traj, show=True, export=False, export_path=None):
+def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=True, export=False, export_path=None):
     fig, ax = plt.subplots(2, 3, figsize=(15, 8))
     im = ax[0, 0].imshow(phantom.numpy(), cmap="gray")
     ax[0, 0].set_title("Phantom")
@@ -264,7 +285,7 @@ def final_plots(phantom, recon, initial_recon, losses, traj, show=True, export=F
     ax[1, 1].set_title("Loss")
 
     ax[1, 2].plot(traj[:, 0].detach().numpy(), traj[:, 1].detach().numpy(), linewidth=0.7, marker=".", markersize=3)
-    ax[1, 2].set_title("Trajectory")
+    ax[1, 2].set_title(f"Trajectory. Slew Rate: {slew_rate.abs().max().item():.2f}")
     if show:
         plt.show()
     if export and export_path is not None:
