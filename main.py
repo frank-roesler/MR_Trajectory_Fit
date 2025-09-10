@@ -32,7 +32,7 @@ with torch.no_grad():
     traj = model(t)
     rosette, kmax_traj = make_rosette(traj, params["n_petals"], kmax_img, zero_filling=params["zero_filling"])
     rosette, sampled, _ = sample_k_space_values(fft, rosette, kmax_img, params["zero_filling"])
-    initial_recon = reconstruct_img(rosette, sampled, params["img_size"], final_FT_scaling)
+    initial_recon = reconstruct_img2(rosette, sampled, params["img_size"], final_FT_scaling)
 
 
 plotter = TrainPlotter(params["img_size"])
@@ -51,7 +51,7 @@ for step in range(params["train_steps"]):
     rosette, kmax_traj = make_rosette(traj, params["n_petals"], kmax_img, zero_filling=params["zero_filling"])
 
     rosette, sampled, fft = sample_k_space_values(fft, rosette, kmax_img, params["zero_filling"])
-    recon = reconstruct_img(rosette, sampled, params["img_size"], final_FT_scaling)
+    recon = reconstruct_img2(rosette, sampled, params["img_size"], final_FT_scaling)
 
     image_loss = img_loss(recon, phantom)
     total_loss = image_loss + grad_loss + slew_loss
