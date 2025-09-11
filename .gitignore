@@ -5,3 +5,5 @@ aux/
 .venv/
 __pycache__/
 results/
+test_results/
+*/.DS_Store
