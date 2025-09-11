@@ -17,10 +17,10 @@ import torch
 from params import *
 
 
-phantom = get_phantom(size=(params["img_size"], params["img_size"]), type="shepp_logan")
+phantom = get_phantom(size=(params["img_size"], params["img_size"]), type="glpu")
 
 # Compute FFT:
-Fop = FFTCn(phantom.shape, phantom.shape, (0, 1), norm="ortho")
+Fop = FFTCn(phantom.shape, phantom.shape, (0, 1), norm=None)
 fft = Fop * phantom
 
 t = torch.linspace(0, params["duration"], steps=params["timesteps"]).unsqueeze(1)  # (timesteps, 1)
@@ -30,7 +30,7 @@ img_loss = get_loss_fcn(params["loss_function"])
 
 with torch.no_grad():
     traj = model(t)
-    rosette, kmax_traj = make_rosette(traj, params["n_petals"], kmax_img, zero_filling=params["zero_filling"])
+    rosette, _ = make_rosette(traj, params["n_petals"], kmax_img, zero_filling=params["zero_filling"])
     rosette, sampled, _ = sample_k_space_values(fft, rosette, kmax_img, params["zero_filling"])
     initial_recon = reconstruct_img2(rosette, sampled, params["img_size"], final_FT_scaling)
 
@@ -48,7 +48,7 @@ for step in range(params["train_steps"]):
         params["grad_loss_weight"],
         params["slew_loss_weight"],
     )
-    rosette, kmax_traj = make_rosette(traj, params["n_petals"], kmax_img, zero_filling=params["zero_filling"])
+    rosette, _ = make_rosette(traj, params["n_petals"], kmax_img, zero_filling=params["zero_filling"])
 
     rosette, sampled, fft = sample_k_space_values(fft, rosette, kmax_img, params["zero_filling"])
     recon = reconstruct_img2(rosette, sampled, params["img_size"], final_FT_scaling)

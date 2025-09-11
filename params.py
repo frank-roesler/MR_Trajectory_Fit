@@ -6,14 +6,14 @@ export_path = os.path.join("results", datetime.now().strftime("%Y-%m-%d_%H-%M"))
 
 params = {
     "train_steps": 10000,
-    "lr": 1e-4,
-    "grad_loss_weight": 1e-2,
-    "slew_loss_weight": 1e-3,
+    "lr": 1e-3,
+    "grad_loss_weight": 1e-1,
+    "slew_loss_weight": 1e-2,
     "zero_filling": True,
     "timesteps": 100,
     "duration": 0.5,  # ms
     "grad_max": 135,
-    "slew_rate": 240,
+    "slew_rate": 220,
     "gamma": 42.575575,  # Gyromagnetic ratio in MHz/T
     "img_size": 512,  # pixels
     "FoV": 224,  # mm
@@ -26,4 +26,4 @@ params = {
 kmax_traj = params["res"] / (2 * params["FoV"])  # 1/m
 kmax_img = params["img_size"] / (2 * params["FoV"])  # 1/m
 dt = params["duration"] / (params["timesteps"] - 1)
-final_FT_scaling = 320 / params["img_size"]
+final_FT_scaling = 4 / params["img_size"] ** 2

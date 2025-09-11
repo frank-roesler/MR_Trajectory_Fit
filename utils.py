@@ -19,10 +19,10 @@ def get_phantom(size=(1024, 1024), type="shepp_logan"):
         phantom = odl.phantom.shepp_logan(odl.uniform_discr([0, 0], [1, 1], size), modified=True)
         phantom_np = phantom.asarray()
     elif type.lower() == "guitar":
-        phantom = Image.open("guitar.jpg").convert("1").resize(size)
-        phantom_np = np.array(phantom) * 1.0
+        phantom = Image.open("phantom_images/guitar.jpg").convert("L").resize(size)
+        phantom_np = np.array(phantom) / 255.0
     else:
-        phantom = Image.open("GLPU.png").resize(size)
+        phantom = Image.open("phantom_images/GLPU/GLPU.png").convert("L").resize(size)
         phantom_np = np.array(phantom) / 255.0
     phantom_tensor = torch.from_numpy(phantom_np).float()
     return phantom_tensor
@@ -56,6 +56,7 @@ def sample_k_space_values(fft, rosette, kmax_img, zero_filling):
     rosette = rosette.reshape(1, 1, rosette.shape[0], 2)
     img_size = fft.shape[-1]
     fft = fft.reshape(1, 1, img_size, img_size)
+
     sampled_r = F.grid_sample(fft.real, rosette / kmax_img, mode="bicubic", align_corners=True)
     sampled_i = F.grid_sample(fft.imag, rosette / kmax_img, mode="bicubic", align_corners=True)
     sampled = torch.complex(sampled_r, sampled_i).squeeze(0)
@@ -85,7 +86,7 @@ def reconstruct_img2(rosette, sampled, img_size, scaling):
     kbnufft.nufft.precompute(rosette)
     I0 = kbnufft.adjoint(rosette, (k0 * dcf).squeeze(0)).unsqueeze(0)
     I0 = torch.flip(torch.rot90(I0, k=1, dims=(2, 3)), dims=[2]).squeeze()
-    I0 = I0 * scaling / np.sqrt(sampled.shape[-1])
+    I0 = I0 * scaling  # / np.sqrt(sampled.shape[-1])
     return I0.abs()
 
 
@@ -242,10 +243,10 @@ def save_checkpoint(path, model, traj, params):
     return slew
 
 
-def plot_pixel_rosette(traj, fft, img_size, ax=None):
-    # Sample FFT at trajectory locations:
-    sampled_coord_x = torch.round((traj[0, 0, :, 0] / 2 - 1) * (img_size - 1) + img_size / 2)
-    sampled_coord_y = torch.round((traj[0, 0, :, 1] / 2 - 1) * (img_size - 1) + img_size / 2)
+def plot_pixel_rosette(rosette, fft, img_size, ax=None):
+    """Sample FFT at trajectory locations"""
+    sampled_coord_x = torch.round((rosette[0, 0, :, 0] + 1) * (img_size - 1) / 2)
+    sampled_coord_y = torch.round((rosette[0, 0, :, 1] + 1) * (img_size - 1) / 2)
     pixel_curve = torch.zeros(img_size, img_size)
     pixel_curve[sampled_coord_y.long(), sampled_coord_x.long()] = 1.0
     sampled_from_pixels = fft[0, 0, sampled_coord_y.long(), sampled_coord_x.long()]
@@ -261,33 +262,34 @@ def plot_pixel_rosette(traj, fft, img_size, ax=None):
 
 def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=True, export=False, export_path=None):
     fig, ax = plt.subplots(2, 3, figsize=(15, 8))
-    im = ax[0, 0].imshow(phantom.numpy(), cmap="gray")
+    im1 = ax[0, 0].imshow(phantom.numpy(), cmap="gray")
     ax[0, 0].set_title("Phantom")
     ax[0, 0].axis("off")
-    fig.colorbar(im, ax=ax[0, 0])
+    fig.colorbar(im1, ax=ax[0, 0])
 
-    im = ax[0, 1].imshow(recon.abs().detach().numpy(), cmap="gray")
+    im2 = ax[0, 1].imshow(recon.abs().detach().numpy(), cmap="gray")
     ax[0, 1].set_title("Recon")
     ax[0, 1].axis("off")
-    fig.colorbar(im, ax=ax[0, 1])
+    fig.colorbar(im2, ax=ax[0, 1])
 
-    im = ax[0, 2].imshow(initial_recon.squeeze().detach().numpy(), cmap="gray")
+    im3 = ax[0, 2].imshow(initial_recon.squeeze().detach().numpy(), cmap="gray")
     ax[0, 2].set_title("Initial Recon")
     ax[0, 2].axis("off")
-    fig.colorbar(im, ax=ax[0, 2])
+    fig.colorbar(im3, ax=ax[0, 2])
 
-    im = ax[1, 0].imshow((recon.abs() - phantom).detach().numpy(), cmap="gray")
+    im4 = ax[1, 0].imshow((recon.abs() - phantom).detach().numpy(), cmap="gray")
     ax[1, 0].set_title("Phantom - Recon")
     ax[1, 0].axis("off")
-    fig.colorbar(im, ax=ax[1, 0])
+    fig.colorbar(im4, ax=ax[1, 0])
 
-    im = ax[1, 1].semilogy(range(len(losses)), losses, linewidth=0.7)
+    im5 = ax[1, 1].semilogy(range(len(losses)), losses, linewidth=0.7)
     ax[1, 1].set_title("Loss")
 
-    ax[1, 2].plot(traj[:, 0].detach().numpy(), traj[:, 1].detach().numpy(), linewidth=0.7, marker=".", markersize=3)
+    im6 = ax[1, 2].plot(traj[:, 0].detach().numpy(), traj[:, 1].detach().numpy(), linewidth=0.7, marker=".", markersize=3)
     ax[1, 2].set_title(f"Trajectory. Slew Rate: {slew_rate.abs().max().item():.2f}")
     if show:
         plt.show()
     if export and export_path is not None:
-        plt.savefig(os.path.join(export_path, "final_figure.png"))
+        plt.savefig(os.path.join(export_path, "final_figure.png"), dpi=300)
         plt.close()
+    return im1, im2, im3, im4, im5, im6
