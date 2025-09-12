@@ -71,7 +71,7 @@ for step in range(params["train_steps"]):
     optimizer.step()
 
     plotter.print_info(step, params["train_steps"], image_loss.item(), grad_loss.item(), slew_loss.item(), best_loss)
-    if total_loss.item() < 0.999 * best_loss and step > 0.1 * params["train_steps"]:
+    if total_loss.item() < 0.999 * best_loss:
         best_loss = total_loss.item()
         slew_rate = save_checkpoint(export_path, model, d_max_rosette, dd_max_rosette, params)
         plotter.export_figure(export_path)
