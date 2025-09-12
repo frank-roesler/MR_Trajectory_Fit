@@ -7,13 +7,13 @@ export_path = os.path.join("results", datetime.now().strftime("%Y-%m-%d_%H-%M"))
 params = {
     "train_steps": 10000,
     "lr": 1e-3,
-    "grad_loss_weight": 1e-1,
-    "slew_loss_weight": 1e-2,
+    "grad_loss_weight": 1e-3,
+    "slew_loss_weight": 1e-4,
     "zero_filling": True,
-    "timesteps": 100,
+    "timesteps": 101,
     "duration": 0.5,  # ms
     "grad_max": 135,
-    "slew_rate": 220,
+    "slew_rate": 240,
     "gamma": 42.575575,  # Gyromagnetic ratio in MHz/T
     "img_size": 512,  # pixels
     "FoV": 224,  # mm

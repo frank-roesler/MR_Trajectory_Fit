@@ -17,11 +17,12 @@ import torch
 from params import *
 
 
-phantom = get_phantom(size=(params["img_size"], params["img_size"]), type="glpu")
+phantom = get_phantom(size=(params["img_size"], params["img_size"]), type="shepp_logan")
 
 # Compute FFT:
 Fop = FFTCn(phantom.shape, phantom.shape, (0, 1), norm=None)
 fft = Fop * phantom
+fft = fft.reshape(1, 1, params["img_size"], params["img_size"])
 
 t = torch.linspace(0, params["duration"], steps=params["timesteps"]).unsqueeze(1)  # (timesteps, 1)
 model = FourierCurve(tmin=0, tmax=torch.max(t), initial_max=kmax_traj, n_coeffs=params["model_size"])
@@ -30,8 +31,8 @@ img_loss = get_loss_fcn(params["loss_function"])
 
 with torch.no_grad():
     traj = model(t)
-    rosette, _ = make_rosette(traj, params["n_petals"], kmax_img, zero_filling=params["zero_filling"])
-    rosette, sampled, _ = sample_k_space_values(fft, rosette, kmax_img, params["zero_filling"])
+    rosette, d_max_rosette, dd_max_rosette = make_rosette(traj, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
+    rosette, sampled = sample_k_space_values(fft, rosette, kmax_img, params["zero_filling"])
     initial_recon = reconstruct_img2(rosette, sampled, params["img_size"], final_FT_scaling)
 
 
@@ -39,18 +40,19 @@ plotter = TrainPlotter(params["img_size"])
 best_loss = float("inf")
 for step in range(params["train_steps"]):
     traj = model(t)  # (timesteps, 2)
+    rosette, d_max_rosette, dd_max_rosette = make_rosette(traj, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
+
     grad_loss, slew_loss = grad_slew_loss(
-        traj,
-        dt,
+        d_max_rosette,
+        dd_max_rosette,
         params["grad_max"],
         params["slew_rate"],
         params["gamma"],
         params["grad_loss_weight"],
         params["slew_loss_weight"],
     )
-    rosette, _ = make_rosette(traj, params["n_petals"], kmax_img, zero_filling=params["zero_filling"])
 
-    rosette, sampled, fft = sample_k_space_values(fft, rosette, kmax_img, params["zero_filling"])
+    rosette, sampled = sample_k_space_values(fft, rosette, kmax_img, params["zero_filling"])
     recon = reconstruct_img2(rosette, sampled, params["img_size"], final_FT_scaling)
 
     image_loss = img_loss(recon, phantom)
@@ -63,7 +65,7 @@ for step in range(params["train_steps"]):
     plotter.print_info(step, params["train_steps"], image_loss.item(), grad_loss.item(), slew_loss.item(), best_loss)
     if total_loss.item() < 0.999 * best_loss and step > 0.01 * params["train_steps"]:
         best_loss = total_loss.item()
-        slew_rate = save_checkpoint(export_path, model, traj, params)
+        slew_rate = save_checkpoint(export_path, model, d_max_rosette, dd_max_rosette, params)
         plotter.export_figure(export_path)
         final_plots(phantom, recon, initial_recon, plotter.total_losses, traj, slew_rate, show=False, export=True, export_path=export_path)
 

@@ -20,7 +20,7 @@ def get_phantom(size=(1024, 1024), type="shepp_logan"):
         phantom_np = phantom.asarray()
     elif type.lower() == "guitar":
         phantom = Image.open("phantom_images/guitar.jpg").convert("L").resize(size)
-        phantom_np = np.array(phantom) / 255.0
+        phantom_np = 1.0 - np.array(phantom) / 255.0
     else:
         phantom = Image.open("phantom_images/GLPU/GLPU.png").convert("L").resize(size)
         phantom_np = np.array(phantom) / 255.0
@@ -35,34 +35,35 @@ def rotate_trajectory(traj, angle_radians):
     return rotated_traj
 
 
-def make_rosette(traj, n_petals, kmax_img, zero_filling=True):
+def make_rosette(traj, n_petals, kmax_img, dt, zero_filling=True):
     rotated_trajectories = [traj]
     angle = 2 * torch.pi / n_petals
     for i in range(n_petals - 1):
         traj_tmp = rotate_trajectory(traj, angle)
         rotated_trajectories.append(traj_tmp)
         traj = traj_tmp
+    d_max, dd_max = torch.zeros(1, 2), torch.zeros(1, 2)
+    for t in rotated_trajectories[: n_petals // 4 + 1]:
+        d, dd = compute_derivatives(t, dt)
+        d_max = torch.maximum(d.abs().max(dim=0).values, d_max)
+        dd_max = torch.maximum(dd.abs().max(dim=0).values, d_max)
     if zero_filling:
         corners = torch.ones(2, 2)
         corners[0] *= kmax_img
         corners[1] *= -kmax_img
         rotated_trajectories.append(corners)
     rosette = torch.cat(rotated_trajectories, dim=0)
-    max_norm = traj.norm(dim=1).max()
-    return rosette, max_norm
+    return rosette, d_max, dd_max
 
 
 def sample_k_space_values(fft, rosette, kmax_img, zero_filling):
     rosette = rosette.reshape(1, 1, rosette.shape[0], 2)
-    img_size = fft.shape[-1]
-    fft = fft.reshape(1, 1, img_size, img_size)
-
     sampled_r = F.grid_sample(fft.real, rosette / kmax_img, mode="bicubic", align_corners=True)
     sampled_i = F.grid_sample(fft.imag, rosette / kmax_img, mode="bicubic", align_corners=True)
     sampled = torch.complex(sampled_r, sampled_i).squeeze(0)
     if zero_filling:
         sampled[:, :, -2:] *= 0  # zero filling
-    return rosette, sampled, fft
+    return rosette, sampled
 
 
 def reconstruct_img(rosette, sampled, img_size, scaling):
@@ -86,7 +87,7 @@ def reconstruct_img2(rosette, sampled, img_size, scaling):
     kbnufft.nufft.precompute(rosette)
     I0 = kbnufft.adjoint(rosette, (k0 * dcf).squeeze(0)).unsqueeze(0)
     I0 = torch.flip(torch.rot90(I0, k=1, dims=(2, 3)), dims=[2]).squeeze()
-    I0 = I0 * scaling  # / np.sqrt(sampled.shape[-1])
+    I0 = I0 * scaling
     return I0.abs()
 
 
@@ -108,15 +109,24 @@ def threshold_loss(x, threshold):
     return threshold_loss**2
 
 
-def grad_slew_loss(traj, dt, grad_max, slew_rate, gamma, grad_loss_weight, slew_loss_weight):
+def grad_slew_loss(
+    d_max_rosette,
+    dd_max_rosette,
+    grad_max,
+    slew_rate_max,
+    gamma,
+    grad_loss_weight,
+    slew_loss_weight,
+):
     """Compute a loss based on the slew rate of the trajectory.
     traj: (timesteps, 2) tensor
     dt: time step size (scalar)
     Returns: slew_loss (scalar)
     """
-    grad, slew = compute_derivatives(traj, dt)
-    grad_loss = threshold_loss(grad, grad_max * gamma / 1000)
-    slew_loss = threshold_loss(slew, slew_rate * gamma / 1000)
+    grad_loss = torch.exp(d_max_rosette - grad_max * gamma / 1000)
+    slew_loss = torch.exp(dd_max_rosette - slew_rate_max * gamma / 1000)
+    # grad_loss = threshold_loss(grad, grad_max * gamma / 1000)
+    # slew_loss = threshold_loss(slew, slew_rate * gamma / 1000)
     return grad_loss_weight * grad_loss.sum(), slew_loss_weight * slew_loss.sum()
 
 
@@ -143,6 +153,8 @@ def get_loss_fcn(name):
         return l1_loss
     if name.upper() == "SSIM":
         return MySSIMLoss(window_size=11, reduction="mean", max_val=1.0)
+    if name.lower() == "combined":
+        return lambda x: MySSIMLoss(window_size=11, reduction="mean", max_val=1.0)(x) + l1_loss(x)
     return mse_loss
 
 
@@ -190,7 +202,7 @@ class TrainPlotter:
         self.img_losses.append(img_loss)
         self.slew_losses.append(slew_loss)
         self.total_losses.append(total_loss)
-        if step % 10 == 0:
+        if step % 20 == 0:
             self.img_loss_line.set_data(range(len(self.img_losses)), self.img_losses)
             self.grad_loss_line.set_data(range(len(self.grad_losses)), self.grad_losses)
             self.slew_loss_line.set_data(range(len(self.slew_losses)), self.slew_losses)
@@ -221,12 +233,10 @@ class TrainPlotter:
         self.fig.savefig(os.path.join(path, "train_figure.png"))
 
 
-def save_checkpoint(path, model, traj, params):
+def save_checkpoint(path, model, d_max_rosette, dd_max_rosette, params):
     os.makedirs(path, exist_ok=True)
-    dt = params["duration"] / (params["timesteps"] - 1)
-    dtraj, ddtraj = compute_derivatives(traj, dt)
-    slew = 1000 / params["gamma"] * ddtraj.max(dim=0).values
-    grad = 1000 / params["gamma"] * dtraj.max(dim=0).values
+    grad = 1000 / params["gamma"] * d_max_rosette
+    slew = 1000 / params["gamma"] * dd_max_rosette
     torch.save(
         {
             "model_state_dict": model.state_dict(),
