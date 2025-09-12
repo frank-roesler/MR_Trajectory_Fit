@@ -28,27 +28,31 @@ def get_phantom(size=(1024, 1024), type="shepp_logan"):
     return phantom_tensor
 
 
-def rotate_trajectory(traj, angle_radians):
+def get_rotation_matrix(n_petals, device=torch.device("cpu")):
+    angle_radians = 2 * torch.pi / n_petals
     angle_radians = torch.Tensor([angle_radians])
-    rotation_matrix = torch.tensor([[torch.cos(angle_radians), -torch.sin(angle_radians)], [torch.sin(angle_radians), torch.cos(angle_radians)]])
-    rotated_traj = traj @ rotation_matrix.T
-    return rotated_traj
+    rotation_matrix = torch.tensor(
+        [
+            [torch.cos(angle_radians), -torch.sin(angle_radians)],
+            [torch.sin(angle_radians), torch.cos(angle_radians)],
+        ]
+    ).to(device)
+    return rotation_matrix
 
 
-def make_rosette(traj, n_petals, kmax_img, dt, zero_filling=True):
+def make_rosette(traj, rotation_matrix, n_petals, kmax_img, dt, zero_filling=True):
     rotated_trajectories = [traj]
-    angle = 2 * torch.pi / n_petals
     for i in range(n_petals - 1):
-        traj_tmp = rotate_trajectory(traj, angle)
+        traj_tmp = traj @ rotation_matrix.T
         rotated_trajectories.append(traj_tmp)
         traj = traj_tmp
-    d_max, dd_max = torch.zeros(1, 2), torch.zeros(1, 2)
+    d_max, dd_max = torch.zeros(1, 2, device=traj.device), torch.zeros(1, 2, device=traj.device)
     for t in rotated_trajectories[: n_petals // 4 + 1]:
         d, dd = compute_derivatives(t, dt)
         d_max = torch.maximum(d.abs().max(dim=0).values, d_max)
         dd_max = torch.maximum(dd.abs().max(dim=0).values, d_max)
     if zero_filling:
-        corners = torch.ones(2, 2)
+        corners = torch.ones(2, 2, device=traj.device)
         corners[0] *= kmax_img
         corners[1] *= -kmax_img
         rotated_trajectories.append(corners)
@@ -81,9 +85,9 @@ def reconstruct_img2(rosette, sampled, img_size, scaling):
     rosette = rosette.squeeze().permute(1, 0) / torch.max(torch.abs(rosette)) * torch.pi
     k0 = sampled.reshape(1, 1, -1)
     dcf = calc_density_compensation_function(rosette[:, :-2], (img_size, img_size))
-    dcf = torch.cat([dcf, torch.zeros(1, 1, 2)], dim=-1)
+    dcf = torch.cat([dcf, torch.zeros(1, 1, 2, device=dcf.device)], dim=-1)
     rosette = rosette.permute(1, 0)
-    kbnufft.nufft.set_dims(sampled.shape[-1], (img_size, img_size), torch.device("cpu"), Nb=1)
+    kbnufft.nufft.set_dims(sampled.shape[-1], (img_size, img_size), device=rosette.device, Nb=1)
     kbnufft.nufft.precompute(rosette)
     I0 = kbnufft.adjoint(rosette, (k0 * dcf).squeeze(0)).unsqueeze(0)
     I0 = torch.flip(torch.rot90(I0, k=1, dims=(2, 3)), dims=[2]).squeeze()
@@ -136,7 +140,6 @@ def mse_loss(img, target):
 
 def l1_loss(img, target):
     loss = torch.mean((img - target).abs())
-    print(loss)
     return loss
 
 
@@ -148,7 +151,6 @@ class MySSIMLoss(nn.Module):
 
     def forward(self, img, target):
         loss = 1.0 - self.ssim(img.unsqueeze(0).unsqueeze(0), target.unsqueeze(0).unsqueeze(0)) + 0.1 * self.L1_loss(img, target)
-        print(loss)
         return loss
 
 
@@ -207,7 +209,7 @@ class TrainPlotter:
         self.img_losses.append(img_loss)
         self.slew_losses.append(slew_loss)
         self.total_losses.append(total_loss)
-        if step % 20 == 0:
+        if step % 10 == 0:
             self.img_loss_line.set_data(range(len(self.img_losses)), self.img_losses)
             self.grad_loss_line.set_data(range(len(self.grad_losses)), self.grad_losses)
             self.slew_loss_line.set_data(range(len(self.slew_losses)), self.slew_losses)
@@ -215,10 +217,10 @@ class TrainPlotter:
             self.ax_total_loss.relim()
             self.ax_total_loss.autoscale_view()
             self.ax_loss.set_ylim(0.9 * min(self.img_losses), 1.1 * max(self.img_losses))
-            img = recon.abs().detach().cpu().numpy()
+            img = recon.abs().detach().cpu().cpu().numpy()
             self.im_recon.set_data(img)
             self.im_recon.set_clim(vmin=0, vmax=img.max())
-            self.traj_line.set_data(traj[:, 0].detach().numpy(), traj[:, 1].detach().numpy())
+            self.traj_line.set_data(traj[:, 0].detach().cpu().numpy(), traj[:, 1].detach().cpu().numpy())
             self.ax_traj.relim()
             self.ax_traj.autoscale_view()
             self.ax_traj.set_aspect("equal", "box")
@@ -267,32 +269,32 @@ def plot_pixel_rosette(rosette, fft, img_size, ax=None):
     sampled_from_pixels = fft[0, 0, sampled_coord_y.long(), sampled_coord_x.long()]
     sampled_from_pixels[-2:] *= 0
     if ax is not None:
-        ax.imshow(pixel_curve[img_size // 4 : 3 * img_size // 4, img_size // 4 : 3 * img_size // 4].detach().numpy())
+        ax.imshow(pixel_curve[img_size // 4 : 3 * img_size // 4, img_size // 4 : 3 * img_size // 4].detach().cpu().numpy())
     else:
         plt.figure()
-        plt.imshow(pixel_curve.detach().numpy())
+        plt.imshow(pixel_curve.detach().cpu().numpy())
         plt.show()
     return sampled_from_pixels
 
 
 def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=True, export=False, export_path=None):
     fig, ax = plt.subplots(2, 3, figsize=(15, 8))
-    im1 = ax[0, 0].imshow(phantom.numpy(), cmap="gray")
+    im1 = ax[0, 0].imshow(phantom.detach().cpu().numpy(), cmap="gray")
     ax[0, 0].set_title("Phantom")
     ax[0, 0].axis("off")
     fig.colorbar(im1, ax=ax[0, 0])
 
-    im2 = ax[0, 1].imshow(recon.abs().detach().numpy(), cmap="gray")
+    im2 = ax[0, 1].imshow(recon.abs().detach().cpu().numpy(), cmap="gray")
     ax[0, 1].set_title("Recon")
     ax[0, 1].axis("off")
     fig.colorbar(im2, ax=ax[0, 1])
 
-    im3 = ax[0, 2].imshow(initial_recon.squeeze().detach().numpy(), cmap="gray")
+    im3 = ax[0, 2].imshow(initial_recon.squeeze().detach().cpu().numpy(), cmap="gray")
     ax[0, 2].set_title("Initial Recon")
     ax[0, 2].axis("off")
     fig.colorbar(im3, ax=ax[0, 2])
 
-    im4 = ax[1, 0].imshow((recon.abs() - phantom).detach().numpy(), cmap="gray")
+    im4 = ax[1, 0].imshow((recon.abs() - phantom).detach().cpu().numpy(), cmap="gray")
     ax[1, 0].set_title("Phantom - Recon")
     ax[1, 0].axis("off")
     fig.colorbar(im4, ax=ax[1, 0])
@@ -300,7 +302,7 @@ def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=Tru
     im5 = ax[1, 1].semilogy(range(len(losses)), losses, linewidth=0.7)
     ax[1, 1].set_title("Loss")
 
-    im6 = ax[1, 2].plot(traj[:, 0].detach().numpy(), traj[:, 1].detach().numpy(), linewidth=0.7, marker=".", markersize=3)
+    im6 = ax[1, 2].plot(traj[:, 0].detach().cpu().numpy(), traj[:, 1].detach().cpu().numpy(), linewidth=0.7, marker=".", markersize=3)
     ax[1, 2].set_title(f"Trajectory. Slew Rate: {slew_rate.abs().max().item():.2f}")
     if show:
         plt.show()

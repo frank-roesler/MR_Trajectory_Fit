@@ -19,7 +19,7 @@ class FourierPulseOpt(nn.Module):
         self.freqs = 2 * torch.pi * k / (t_max - t_min)
 
     def to(self, device):
-        self.k = self.k.to(device)
+        self.freqs = self.freqs.to(device)
         return super().to(device)
 
     def forward(self, x):
