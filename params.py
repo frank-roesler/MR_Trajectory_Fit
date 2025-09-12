@@ -20,7 +20,7 @@ params = {
     "res": 50,
     "n_petals": 80,
     "model_size": 11,  # number of Fourier coefficients
-    "loss_function": "L1",
+    "loss_function": "combined",
 }
 
 kmax_traj = params["res"] / (2 * params["FoV"])  # 1/m

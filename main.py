@@ -17,7 +17,7 @@ import torch
 from params import *
 
 
-phantom = get_phantom(size=(params["img_size"], params["img_size"]), type="shepp_logan")
+phantom = get_phantom(size=(params["img_size"], params["img_size"]), type="glpu")
 
 # Compute FFT:
 Fop = FFTCn(phantom.shape, phantom.shape, (0, 1), norm=None)

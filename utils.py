@@ -135,7 +135,9 @@ def mse_loss(img, target):
 
 
 def l1_loss(img, target):
-    return torch.mean((img - target).abs())
+    loss = torch.mean((img - target).abs())
+    print(loss)
+    return loss
 
 
 class MySSIMLoss(nn.Module):
@@ -145,7 +147,9 @@ class MySSIMLoss(nn.Module):
         self.L1_loss = nn.L1Loss()
 
     def forward(self, img, target):
-        return 1.0 - self.ssim(img.unsqueeze(0).unsqueeze(0), target.unsqueeze(0).unsqueeze(0)) + 0.1 * self.L1_loss(img, target)
+        loss = 1.0 - self.ssim(img.unsqueeze(0).unsqueeze(0), target.unsqueeze(0).unsqueeze(0)) + 0.1 * self.L1_loss(img, target)
+        print(loss)
+        return loss
 
 
 def get_loss_fcn(name):
@@ -154,7 +158,8 @@ def get_loss_fcn(name):
     if name.upper() == "SSIM":
         return MySSIMLoss(window_size=11, reduction="mean", max_val=1.0)
     if name.lower() == "combined":
-        return lambda x: MySSIMLoss(window_size=11, reduction="mean", max_val=1.0)(x) + l1_loss(x)
+        ssim_loss = MySSIMLoss(window_size=11, reduction="mean", max_val=1.0)
+        return lambda x, y: 0.1 * ssim_loss(x, y) + l1_loss(x, y)
     return mse_loss
 
 
