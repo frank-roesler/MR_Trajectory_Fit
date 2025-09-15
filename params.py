@@ -5,7 +5,7 @@ from datetime import datetime
 export_path = os.path.join("results", datetime.now().strftime("%Y-%m-%d_%H-%M"))
 
 params = {
-    "train_steps": 10000,
+    "train_steps": 100,
     "lr": 1e-3,
     "grad_loss_weight": 1e-3,
     "slew_loss_weight": 1e-4,
@@ -15,12 +15,12 @@ params = {
     "grad_max": 135,
     "slew_rate": 240,
     "gamma": 42.575575,  # Gyromagnetic ratio in MHz/T
-    "img_size": 512,  # pixels
+    "img_size": 128,  # pixels
     "FoV": 224,  # mm
     "res": 50,
     "n_petals": 80,
     "model_size": 11,  # number of Fourier coefficients
-    "loss_function": "combined",
+    "loss_function": "L1",
 }
 
 kmax_traj = params["res"] / (2 * params["FoV"])  # 1/m

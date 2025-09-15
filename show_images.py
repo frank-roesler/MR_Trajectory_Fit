@@ -12,7 +12,7 @@ from utils import (
 )
 import matplotlib.pyplot as plt
 from mirtorch.linear import FFTCn
-from nets import FourierCurve
+from models import FourierCurve
 import torch
 
 

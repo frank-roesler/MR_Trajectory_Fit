@@ -11,6 +11,7 @@ from kornia.losses import SSIMLoss
 import os
 from PIL import Image
 import numpy as np
+from mirtorch_pkg import NuSense_om, NuSense
 
 
 def get_phantom(size=(1024, 1024), type="shepp_logan"):
@@ -43,9 +44,8 @@ def get_rotation_matrix(n_petals, device=torch.device("cpu")):
 def make_rosette(traj, rotation_matrix, n_petals, kmax_img, dt, zero_filling=True):
     rotated_trajectories = [traj]
     for i in range(n_petals - 1):
-        traj_tmp = traj @ rotation_matrix.T
-        rotated_trajectories.append(traj_tmp)
-        traj = traj_tmp
+        traj = traj @ rotation_matrix.T
+        rotated_trajectories.append(traj)
     d_max, dd_max = torch.zeros(1, 2, device=traj.device), torch.zeros(1, 2, device=traj.device)
     for t in rotated_trajectories[: n_petals // 4 + 1]:
         d, dd = compute_derivatives(t, dt)
@@ -62,37 +62,104 @@ def make_rosette(traj, rotation_matrix, n_petals, kmax_img, dt, zero_filling=Tru
 
 def sample_k_space_values(fft, rosette, kmax_img, zero_filling):
     rosette = rosette.reshape(1, 1, rosette.shape[0], 2)
-    sampled_r = F.grid_sample(fft.real, rosette / kmax_img, mode="bicubic", align_corners=True)
-    sampled_i = F.grid_sample(fft.imag, rosette / kmax_img, mode="bicubic", align_corners=True)
+    sampled_r = F.grid_sample(fft.real.detach(), rosette / kmax_img, mode="bicubic", align_corners=True)
+    sampled_i = F.grid_sample(fft.imag.detach(), rosette / kmax_img, mode="bicubic", align_corners=True)
     sampled = torch.complex(sampled_r, sampled_i).squeeze(0)
     if zero_filling:
         sampled[:, :, -2:] *= 0  # zero filling
     return rosette, sampled
 
 
-def reconstruct_img(rosette, sampled, img_size, scaling):
+def reconstruct_img(rosette, sampled, img_size, kmax_img, scaling):
     s0 = torch.ones(1, 1, img_size, img_size) + 0j
-    rosette0 = rosette.squeeze().permute(1, 0) / torch.max(torch.abs(rosette)) * torch.pi
-    k0 = sampled.reshape(1, 1, -1)
-    dcf = calc_density_compensation_function(rosette0, (img_size, img_size))
-    Nop = NuSense(s0, rosette0, norm=None)
-    I0 = Nop.H * (dcf * k0)
+    rosette = rosette.squeeze().permute(1, 0) / kmax_img * torch.pi
+    sampled = sampled.reshape(1, 1, -1)
+    dcf = calc_density_compensation_function(rosette, (img_size, img_size)) + 0j
+    # Nop = NuSense(s0, rosette, norm="ortho")
+    Nop = NuSense_om(s0, rosette.reshape(1, 2, -1), norm=None)
+    I0 = Nop.H * (dcf * sampled)
     I0 = torch.flip(torch.rot90(I0.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
-    return I0
+    return I0 * scaling
 
 
-def reconstruct_img2(rosette, sampled, img_size, scaling):
-    rosette = rosette.squeeze().permute(1, 0) / torch.max(torch.abs(rosette)) * torch.pi
-    k0 = sampled.reshape(1, 1, -1)
+def reconstruct_img2(rosette, sampled, img_size, kmax_img, scaling):
+    rosette = rosette.squeeze().permute(1, 0) / kmax_img * torch.pi
+    sampled = sampled.reshape(1, 1, -1)
     dcf = calc_density_compensation_function(rosette[:, :-2], (img_size, img_size))
     dcf = torch.cat([dcf, torch.zeros(1, 1, 2, device=dcf.device)], dim=-1)
     rosette = rosette.permute(1, 0)
     kbnufft.nufft.set_dims(sampled.shape[-1], (img_size, img_size), device=rosette.device, Nb=1)
     kbnufft.nufft.precompute(rosette)
-    I0 = kbnufft.adjoint(rosette, (k0 * dcf).squeeze(0)).unsqueeze(0)
-    I0 = torch.flip(torch.rot90(I0, k=1, dims=(2, 3)), dims=[2]).squeeze()
+    I0 = kbnufft.adjoint(rosette, (sampled * dcf).squeeze(0)).unsqueeze(0)
+    I0 = torch.flip(torch.rot90(I0.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
     I0 = I0 * scaling
-    return I0.abs()
+    return I0
+
+
+# def reconstruct_img_nudft_slow(rosette, sampled, img_size, kmax_img, scaling):
+#     rosette = rosette.squeeze().permute(1, 0)
+#     sampled = sampled.reshape(1, 1, -1)
+#     dcf = calc_density_compensation_function(rosette / kmax_img * torch.pi, (img_size, img_size))
+#     # dcf = torch.load("dcf.pt")
+#     sampled = (sampled * dcf).squeeze()
+#     img_x = torch.linspace(-1, 1, img_size) * 224 / 2
+#     img_y = torch.linspace(-1, 1, img_size) * 224 / 2
+#     img_coords = torch.stack(torch.meshgrid(img_x, img_y))
+#     img = torch.zeros((img_size, img_size)) + 0j
+#     for i in range(img_size):
+#         for j in range(img_size):
+#             exponent = rosette[0, :] * img_coords[0, i, j] + rosette[1, :] * img_coords[1, i, j]
+#             img[i, j] = sampled @ torch.exp(2 * torch.pi * 1j * exponent)
+#     img = torch.flip(torch.rot90(img.abs(), k=1, dims=(0, 1)), dims=[0]) * scaling
+#     # plt.imshow(img)
+#     # plt.colorbar()
+#     # plt.show()
+#     return img
+
+
+def reconstruct_img_nudft(rosette, sampled, img_size, kmax_img, scaling):
+    rosette = rosette.squeeze().permute(1, 0)
+    sampled = sampled.reshape(-1)
+
+    # if rosette.requires_grad:
+    #     rosette.retain_grad()
+    #     rosette.register_hook(lambda grad: print("ROSETTE:", grad))
+    # if rosette.requires_grad:
+    #     dcf.retain_grad()
+    #     dcf.abs().mean().backward()
+    #     g = rosette.grad
+
+    # dcf = torch.load("dcf.pt")
+    dcf = pipe_density_compensation(rosette, 100).reshape(sampled.shape)
+
+    sampled = sampled * dcf.squeeze()
+    coords = torch.linspace(-1, 1, img_size, device=rosette.device) * 112
+    grid_y, grid_x = torch.meshgrid(coords, coords, indexing="ij")
+    img_coords = torch.stack([grid_x, grid_y], dim=-1)
+    img_coords_flat = img_coords.reshape(-1, 2)
+    exponent = img_coords_flat @ rosette
+    exponent = 2 * torch.pi * 1j * exponent
+    nudft = torch.exp(exponent) @ sampled
+    img = nudft.view(img_size, img_size).abs() * scaling
+    # plt.plot(dcf.detach().squeeze())
+    # plt.show()
+    return img
+
+
+def pipe_density_compensation(rosette, timesteps, num_iters=10):
+    rosette = rosette[:, :-2]
+    traj = rosette[..., :timesteps]
+    n_petals = rosette.shape[-1] // timesteps
+    N = traj.shape[-1]
+    w = torch.ones(n_petals * N)
+    for _ in range(num_iters):
+        psf = torch.zeros(N)
+        for i in range(N):
+            dist_sq = torch.sum((rosette - rosette[:, i : i + 1]) ** 2, axis=0)
+            psf[i] = torch.sum(w / (dist_sq + 1e-6))
+        w = w / psf.repeat(n_petals)
+    w = 50 * N * n_petals * torch.cat([w, torch.zeros((2))], dim=0)
+    return w
 
 
 def compute_derivatives(traj, dt):
@@ -227,8 +294,10 @@ class TrainPlotter:
             self.ax_img.set_title(f"Recon (abs) Step {step+1}")
             plt.pause(0.01)
 
-    def print_info(self, step, train_steps, image_loss, grad_loss, slew_loss, best_loss):
+    def print_info(self, step, train_steps, image_loss, grad_loss, slew_loss, best_loss, optimizer):
         print(f"Step {step+1}/{train_steps}")
+        for i, param_group in enumerate(optimizer.param_groups):
+            print(f"  Learning rate {i}: {param_group['lr']:.7f}")
         print(f"  Image loss: {image_loss:.6f}")
         print(f"  Gradient loss: {grad_loss:.6f}")
         print(f"  Slew rate loss: {slew_loss:.6f}")
@@ -247,6 +316,7 @@ def save_checkpoint(path, model, d_max_rosette, dd_max_rosette, params):
     torch.save(
         {
             "model_state_dict": model.state_dict(),
+            "model_name": model.name,
             "params": params,
             "slew_rate": slew,
             "gradient": grad,
@@ -303,7 +373,7 @@ def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=Tru
     ax[1, 1].set_title("Loss")
 
     im6 = ax[1, 2].plot(traj[:, 0].detach().cpu().numpy(), traj[:, 1].detach().cpu().numpy(), linewidth=0.7, marker=".", markersize=3)
-    ax[1, 2].set_title(f"Trajectory. Slew Rate: {slew_rate.abs().max().item():.2f}")
+    ax[1, 2].set_title(f"Trajectory. Slew Rate: {slew_rate.abs().max().detach().item():.2f}")
     if show:
         plt.show()
     if export and export_path is not None:
