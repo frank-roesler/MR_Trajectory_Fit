@@ -7,12 +7,12 @@ class FourierPulseOpt(nn.Module):
 
     def __init__(self, t_min, t_max, n_coeffs=101, initialization="cos"):
         super().__init__()
-        p = 1e-5 * torch.randn((2 * n_coeffs + 1, 2))
+        p = 1e-1 * torch.randn((2 * n_coeffs + 1, 2))
         if initialization == "cos":
             p[n_coeffs + 1, 1] = 1.0
         elif initialization == "sin":
             p[n_coeffs + 1, 0] = 1.0
-        weights = torch.exp(-0.01 * torch.arange(-n_coeffs, n_coeffs + 1) ** 2)
+        weights = torch.exp(-0.1 * torch.arange(-n_coeffs, n_coeffs + 1) ** 2)
         p = p * weights.unsqueeze(1)
         self.params = torch.nn.Parameter(p)
         k = torch.arange(-n_coeffs, n_coeffs + 1).unsqueeze(0)
@@ -55,10 +55,11 @@ class FourierCurve(nn.Module):
 
 
 class Ellipse(nn.Module):
-    def __init__(self, tmin, tmax, initial_max=1.0):
+    def __init__(self, tmin, tmax, initial_a=1.0, initial_b=1.0):
         super().__init__()
-        self.scaling = initial_max * 0.5
-        self.axes = torch.nn.Parameter(self.scaling * torch.ones(2))
+        self.scaling_a = initial_a * 0.5
+        self.scaling_b = initial_b * 0.5
+        self.axes = torch.nn.Parameter(torch.Tensor([self.scaling_a, self.scaling_b]))
         self.name = "Ellipse"
         self.k = 2 * torch.pi / (tmax - tmin)
 
@@ -70,3 +71,38 @@ class Ellipse(nn.Module):
         fx = self.k * x
         out = torch.cat([self.axes[0] * (torch.cos(fx) - 1), self.axes[1] * torch.sin(fx)], dim=-1)
         return out
+
+
+class DCFNet(nn.Module):
+    def __init__(self, input_size=200, output_size=100, n_hidden=2, n_features=128):
+        super().__init__()
+        self.input_size = input_size
+        self.output_size = output_size
+        self.n_features = n_features
+        self.relu = nn.ELU()
+        self.input_layer = nn.Linear(self.input_size, n_features)
+        layers = []
+        for i in range(n_hidden // 2):
+            layers += self.up_block(i)
+        for i in range(n_hidden // 2 - 1, -1, -1):
+            layers += self.down_block(i)
+        self.hidden_layers = nn.Sequential(*layers)
+        self.out_layer = nn.Linear(n_features, self.output_size)
+
+    def up_block(self, i):
+        return [nn.Linear(self.n_features * 2**i, self.n_features * 2 ** (i + 1)), self.relu]
+
+    def down_block(self, i):
+        return [nn.Linear(self.n_features * 2 ** (i + 1), self.n_features * 2**i), self.relu]
+
+    def forward(self, x):
+        x = self.relu(self.input_layer(x))
+        x = self.hidden_layers(x)
+        x = self.relu(self.out_layer(x))
+        return x
+
+
+# x = torch.randn((1, 200))
+# net = DCFNet(n_hidden=4)
+# y = net(x)
+# print("OUTPUT:", y.shape)
