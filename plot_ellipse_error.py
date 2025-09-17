@@ -11,7 +11,7 @@ from utils import (
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from mirtorch.linear import FFTCn
-from models import FourierCurve, Ellipse
+from models import FourierCurve, Ellipse, DCFNet
 import torch
 from params import *
 
@@ -30,10 +30,14 @@ model = Ellipse(tmin=0, tmax=params["duration"], initial_max=kmax_traj)
 model.to(device)
 img_loss = get_loss_fcn(params["loss_function"])
 
-axes_range = torch.arange(0.055, 0.058, 0.0002)
+dcfnet = DCFNet(input_size=2 * (params["timesteps"] - 1), output_size=params["timesteps"] - 1, n_hidden=10, n_features=256).to(device)
+dcfdict = torch.load("dcfnet2.pt")
+dcfnet.load_state_dict(dcfdict)
+
+axes_range = torch.arange(0.05, 0.06, 0.0001)
 loss_values = torch.zeros(len(axes_range), len(axes_range)).to(device)
 
-(x, y, loss_values) = torch.load("landscape_l1_nudft_ownDcf.pt")
+(x, y, loss_values) = torch.load("landscape_l1_nudft_dcfnet.pt")
 # x, y, loss_values = x[: -x.shape[0] // 3, : -x.shape[0] // 3], y[: -x.shape[0] // 3, : -x.shape[0] // 3], loss_values[: -x.shape[0] // 3, : -x.shape[0] // 3]
 
 # region
@@ -57,12 +61,12 @@ loss_values = torch.zeros(len(axes_range), len(axes_range)).to(device)
 #             rosette = torch.cat(rotated_trajectories, dim=0)
 
 #             rosette, sampled = sample_k_space_values(fft, rosette, kmax_img, True)
-#             recon = reconstruct_img_nudft(rosette, sampled, params["img_size"], kmax_img, final_FT_scaling)
+#             recon = reconstruct_img2(rosette, sampled, params["img_size"], kmax_img, final_FT_scaling, dcfnet)
 #             image_loss = img_loss(recon, phantom)
 #             loss_values[i, j] = image_loss.detach().item()
 
 # x, y = torch.meshgrid(axes_range, axes_range)
-# torch.save((x, y, loss_values), "landscape_l1_nudft_ownDcf.pt")
+# torch.save((x, y, loss_values), "landscape_l1_nudft_dcfnet.pt")
 # endregion
 
 # fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
@@ -70,10 +74,10 @@ loss_values = torch.zeros(len(axes_range), len(axes_range)).to(device)
 # fig.colorbar(im, ax=ax)
 
 fig2, ax2 = plt.subplots()
-im2 = ax2.contour(x, y, loss_values.detach().cpu(), cmap=cm.viridis, levels=125, linewidths=0.5)
+im2 = ax2.contour(x, y, loss_values.detach().cpu(), cmap=cm.viridis, levels=100, linewidths=0.5)
 fig2.colorbar(im2, ax=ax2)
 
-(a, b) = torch.load("results/2025-09-15_17-37/train_path.pt")
+(a, b) = torch.load("results/2025-09-16_20-23/train_path.pt")
 a = a[::1]
 b = b[::1]
 

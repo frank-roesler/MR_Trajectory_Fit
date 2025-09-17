@@ -5,9 +5,9 @@ import torch.nn as nn
 class FourierPulseOpt(nn.Module):
     """Auxiliary 1d Fourier series. Used in FourierSeries class."""
 
-    def __init__(self, t_min, t_max, n_coeffs=101, initialization="cos"):
+    def __init__(self, t_min, t_max, n_coeffs=101, initialization="cos", coeff_lvl=1e-5):
         super().__init__()
-        p = 1e-1 * torch.randn((2 * n_coeffs + 1, 2))
+        p = coeff_lvl * torch.randn((2 * n_coeffs + 1, 2))
         if initialization == "cos":
             p[n_coeffs + 1, 1] = 1.0
         elif initialization == "sin":
@@ -32,13 +32,13 @@ class FourierPulseOpt(nn.Module):
 
 
 class FourierCurve(nn.Module):
-    def __init__(self, tmin, tmax, initial_max=1.0, n_coeffs=51):
+    def __init__(self, tmin, tmax, initial_max=1.0, n_coeffs=51, coeff_lvl=1e-5):
         super().__init__()
         self.scaling = initial_max * 0.5
         self.pulses = nn.ModuleList(
             [
-                FourierPulseOpt(tmin, tmax, n_coeffs=n_coeffs, initialization="cos"),
-                FourierPulseOpt(tmin, tmax, n_coeffs=n_coeffs, initialization="sin"),
+                FourierPulseOpt(tmin, tmax, n_coeffs=n_coeffs, initialization="cos", coeff_lvl=coeff_lvl),
+                FourierPulseOpt(tmin, tmax, n_coeffs=n_coeffs, initialization="sin", coeff_lvl=coeff_lvl),
             ]
         )
         self.name = "FourierCurve"
@@ -55,11 +55,10 @@ class FourierCurve(nn.Module):
 
 
 class Ellipse(nn.Module):
-    def __init__(self, tmin, tmax, initial_a=1.0, initial_b=1.0):
+    def __init__(self, tmin, tmax, initial_max=1.0):
         super().__init__()
-        self.scaling_a = initial_a * 0.5
-        self.scaling_b = initial_b * 0.5
-        self.axes = torch.nn.Parameter(torch.Tensor([self.scaling_a, self.scaling_b]))
+        self.scaling = initial_max * 0.5
+        self.axes = torch.nn.Parameter(self.scaling * torch.ones(2))
         self.name = "Ellipse"
         self.k = 2 * torch.pi / (tmax - tmin)
 
@@ -76,6 +75,7 @@ class Ellipse(nn.Module):
 class DCFNet(nn.Module):
     def __init__(self, input_size=200, output_size=100, n_hidden=2, n_features=128):
         super().__init__()
+        self.name = "fc"
         self.input_size = input_size
         self.output_size = output_size
         self.n_features = n_features
@@ -102,7 +102,107 @@ class DCFNet(nn.Module):
         return x
 
 
-# x = torch.randn((1, 200))
-# net = DCFNet(n_hidden=4)
+class FCN1D(nn.Module):
+    def __init__(self, channels, kernel_size=3):
+        super().__init__()
+        self.name = "fcn"
+        assert kernel_size % 2 == 1
+        padding = kernel_size // 2
+
+        layers = []
+        for in_ch, out_ch in zip(channels[:-1], channels[1:]):
+            layers.append(nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, padding=padding))
+            if out_ch != channels[-1]:
+                layers.append(nn.ReLU())
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class ConvBlock(nn.Module):
+    def __init__(self, in_ch, out_ch, kernel_size=3):
+        super().__init__()
+        padding = kernel_size // 2
+        self.block = nn.Sequential(nn.Conv1d(in_ch, out_ch, kernel_size, padding=padding), nn.ReLU(), nn.Conv1d(out_ch, out_ch, kernel_size, padding=padding), nn.ReLU())
+
+    def forward(self, x):
+        return self.block(x)
+
+
+class UNet1D(nn.Module):
+    def __init__(self, in_channels=2, out_channels=1, features=[16, 32, 64]):
+        """
+        Simple 1D U-Net.
+
+        Parameters
+        ----------
+        in_channels : int
+            Number of input channels.
+        out_channels : int
+            Number of output channels.
+        features : list of int
+            Channel sizes for encoder layers.
+        """
+        super().__init__()
+        self.name = "unet"
+        self.encoders = nn.ModuleList()
+        self.decoders = nn.ModuleList()
+        self.pools = nn.ModuleList()
+
+        # Encoder path
+        prev_ch = in_channels
+        for f in features:
+            self.encoders.append(ConvBlock(prev_ch, f))
+            self.pools.append(nn.MaxPool1d(kernel_size=2, stride=2))
+            prev_ch = f
+
+        # Bottleneck
+        self.bottleneck = ConvBlock(prev_ch, prev_ch * 2)
+
+        # Decoder path
+        rev_features = features[::-1]
+        prev_ch = prev_ch * 2
+        for f in rev_features:
+            self.decoders.append(nn.ConvTranspose1d(prev_ch, f, kernel_size=2, stride=2))
+            self.decoders.append(ConvBlock(prev_ch, f))
+            prev_ch = f
+
+        # Final output conv
+        self.final_conv = nn.Conv1d(prev_ch, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        skips = []
+
+        # Encoder
+        for enc, pool in zip(self.encoders, self.pools):
+            x = enc(x)
+            skips.append(x)
+            x = pool(x)
+
+        # Bottleneck
+        x = self.bottleneck(x)
+
+        # Decoder
+        skips = skips[::-1]
+        for i in range(0, len(self.decoders), 2):
+            up = self.decoders[i]
+            conv = self.decoders[i + 1]
+            x = up(x)
+            skip = skips[i // 2]
+
+            # pad if needed (in case lengths mismatch by 1)
+            if x.shape[-1] != skip.shape[-1]:
+                diff = skip.shape[-1] - x.shape[-1]
+                x = nn.functional.pad(x, (0, diff))
+
+            x = torch.cat([skip, x], dim=1)
+            x = conv(x)
+
+        return self.final_conv(x)
+
+
+# x = torch.randn((2, 100))
+# net = FCN1D(channels=[2, 16, 32, 16, 1])
 # y = net(x)
 # print("OUTPUT:", y.shape)

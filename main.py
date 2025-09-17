@@ -3,10 +3,7 @@ from utils import (
     make_rosette,
     grad_slew_loss,
     get_loss_fcn,
-    sample_k_space_values,
-    reconstruct_img,
-    reconstruct_img2,
-    reconstruct_img_nudft,
+    ImageRecon,
     TrainPlotter,
     final_plots,
     save_checkpoint,
@@ -22,7 +19,7 @@ torch.set_printoptions(threshold=100000)
 
 device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 
-phantom = get_phantom(size=(params["img_size"], params["img_size"]), type="shepp_logan").to(device)
+phantom = get_phantom(size=(params["img_size"], params["img_size"]), type="glpu").to(device)
 
 # Compute FFT:
 Fop = FFTCn(phantom.shape, phantom.shape, (0, 1), norm=None)
@@ -32,50 +29,34 @@ rotation_matrix = get_rotation_matrix(params["n_petals"], device=device).detach(
 
 t = torch.linspace(0, params["duration"], steps=params["timesteps"]).unsqueeze(1).to(device)  # (timesteps, 1)
 
-# model = FourierCurve(tmin=0, tmax=params["duration"], initial_max=kmax_traj, n_coeffs=params["model_size"])
-model = Ellipse(tmin=0, tmax=params["duration"], initial_max=kmax_traj)
+model = FourierCurve(tmin=0, tmax=params["duration"], initial_max=kmax_traj, n_coeffs=params["model_size"])
+# model = Ellipse(tmin=0, tmax=params["duration"], initial_max=kmax_traj).to(device)
 
-model.to(device)
 optimizer = torch.optim.SGD(model.parameters(), lr=params["lr"])
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=200, factor=0.5, min_lr=1e-6, threshold=1e-6, cooldown=100)
 img_loss = get_loss_fcn(params["loss_function"])
 
+reconstructor = ImageRecon(params, kmax_img, normalization, dcfnet="unet", method="kbnufft")
+plotter = TrainPlotter(params["img_size"])
+
 with torch.no_grad():
     traj = model(t)
     rosette, d_max_rosette, dd_max_rosette = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
-    rosette, sampled = sample_k_space_values(fft, rosette, kmax_img, params["zero_filling"])
-    initial_recon = reconstruct_img_nudft(rosette, sampled, params["img_size"], kmax_img, final_FT_scaling)
+    initial_recon = reconstructor.reconstruct_img(fft, rosette)
 
-plotter = TrainPlotter(params["img_size"])
 best_loss = float("inf")
-params_a = []
-params_b = []
 for step in range(params["train_steps"]):
     traj = model(t)  # (timesteps, 2)
     rosette, d_max_rosette, dd_max_rosette = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
 
-    grad_loss, slew_loss = grad_slew_loss(
-        d_max_rosette,
-        dd_max_rosette,
-        params["grad_max"],
-        params["slew_rate"],
-        params["gamma"],
-        params["grad_loss_weight"],
-        params["slew_loss_weight"],
-    )
+    grad_loss, slew_loss = grad_slew_loss(d_max_rosette, dd_max_rosette, params, mode="exp")
 
-    rosette, sampled = sample_k_space_values(fft, rosette, kmax_img, params["zero_filling"])
-    recon = reconstruct_img_nudft(rosette, sampled, params["img_size"], kmax_img, final_FT_scaling)
-
+    recon = reconstructor.reconstruct_img(fft, rosette)
     image_loss = img_loss(recon, phantom)
-    total_loss = image_loss  # + grad_loss + slew_loss
+    total_loss = image_loss + grad_loss + slew_loss
 
     optimizer.zero_grad()
     total_loss.backward()
-
-    params_a.append((model.axes[0].detach().item(), model.axes.grad[0].detach().item()))
-    params_b.append((model.axes[1].detach().item(), model.axes.grad[1].detach().item()))
-
     optimizer.step()
     scheduler.step(total_loss.detach().item())
 
@@ -89,11 +70,12 @@ for step in range(params["train_steps"]):
     plotter.update(step, grad_loss.detach().item(), image_loss.detach().item(), slew_loss.detach().item(), total_loss.detach().item(), recon, traj)
 
 
-torch.save((params_a, params_b), export_path + "/train_path.pt")
 plotter.export_figure(export_path)
 
 # region Plot results:
-final_plots(phantom, recon, initial_recon, plotter.total_losses, traj, slew_rate)
+reconstructor = ImageRecon(params, kmax_img, normalization, dcfnet="unet", method="mirtorch")
+recon = reconstructor.reconstruct_img(fft, rosette)
+final_plots(phantom, recon, initial_recon, plotter.total_losses, traj, slew_rate, export=True, export_path=export_path + "/mirtorch")
 
 # sampled_from_pixels = plot_pixel_rosette(rosette / kmax_img, fft, phantom.shape[-1], ax=ax[1, 2])
 
@@ -102,12 +84,12 @@ final_plots(phantom, recon, initial_recon, plotter.total_losses, traj, slew_rate
 # plt.legend()
 # plt.show()
 
-fig, ax = plt.subplots(1, 2, figsize=(11, 5))
-ax[0].plot(rosette[0, 0, :-2, 0].detach().cpu().numpy(), rosette[0, 0, :-2, 1].detach().cpu().numpy(), linewidth=0.7)
-ax[1].plot(traj[:, 0].detach().cpu().numpy(), traj[:, 1].detach().cpu().numpy(), linewidth=0.7)
-ax[1].set_aspect("equal", "box")
-ax[0].set_aspect("equal", "box")
-plt.show()
+# fig, ax = plt.subplots(1, 2, figsize=(11, 5))
+# ax[0].plot(rosette[0, :-2, 0].detach().cpu().numpy(), rosette[0, 0, :-2, 1].detach().cpu().numpy(), linewidth=0.7)
+# ax[1].plot(traj[:, 0].detach().cpu().numpy(), traj[:, 1].detach().cpu().numpy(), linewidth=0.7)
+# ax[1].set_aspect("equal", "box")
+# ax[0].set_aspect("equal", "box")
+# plt.show()
 
 # fig, ax = plt.subplots(1, 2)
 # im = ax[0].imshow(phantom[:, :].numpy(), cmap="gray")
