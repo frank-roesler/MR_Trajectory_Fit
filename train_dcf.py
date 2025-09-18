@@ -62,7 +62,7 @@ for step in range(len(train_data)):
     loss.backward()
     optimizer.step()
     if loss < 0.99 * best_loss:
-        torch.save(dcfnet.state_dict(), f"dcfnet_{dcfnet.name}.pt")
+        torch.save(dcfnet.state_dict(), f"trained_models/dcfnet_{dcfnet.name}.pt")
         best_loss = loss
 
     losses.append(loss.detach().cpu().item())

@@ -15,65 +15,23 @@ from mirtorch_pkg import NuSense_om, NuSense
 from models import DCFNet, UNet1D, FCN1D
 
 
-def get_phantom(size=(1024, 1024), type="shepp_logan"):
-    """Generate a Shepp-Logan phantom as a PyTorch tensor."""
-    if type.lower() == "shepp_logan":
-        phantom = odl.phantom.shepp_logan(odl.uniform_discr([0, 0], [1, 1], size), modified=True)
-        phantom_np = phantom.asarray()
-    elif type.lower() == "guitar":
-        phantom = Image.open("phantom_images/guitar.jpg").convert("L").resize(size)
-        phantom_np = 1.0 - np.array(phantom) / 255.0
-    else:
-        phantom = Image.open("phantom_images/GLPU/GLPU.png").convert("L").resize(size)
-        phantom_np = np.array(phantom) / 255.0
-    phantom_tensor = torch.from_numpy(phantom_np).float()
-    return phantom_tensor
-
-
-def get_rotation_matrix(n_petals, device=torch.device("cpu")):
-    angle_radians = 2 * torch.pi / n_petals
-    angle_radians = torch.Tensor([angle_radians])
-    rotation_matrix = torch.tensor(
-        [
-            [torch.cos(angle_radians), -torch.sin(angle_radians)],
-            [torch.sin(angle_radians), torch.cos(angle_radians)],
-        ]
-    ).to(device)
-    return rotation_matrix
-
-
-def make_rosette(traj, rotation_matrix, n_petals, kmax_img, dt, zero_filling=True):
-    rotated_trajectories = [traj]
-    for i in range(n_petals - 1):
-        traj = traj @ rotation_matrix.T
-        rotated_trajectories.append(traj)
-    d_max, dd_max = torch.zeros(1, 2, device=traj.device), torch.zeros(1, 2, device=traj.device)
-    for t in rotated_trajectories[: n_petals // 4 + 1]:
-        d, dd = compute_derivatives(t, dt)
-        d_max = torch.maximum(d.abs().max(dim=0).values, d_max)
-        dd_max = torch.maximum(dd.abs().max(dim=0).values, d_max)
-    if zero_filling:
-        corners = torch.ones(2, 2, device=traj.device)
-        corners[0] *= kmax_img
-        corners[1] *= -kmax_img
-        rotated_trajectories.append(corners)
-    rosette = torch.cat(rotated_trajectories, dim=0)
-    return rosette, d_max, dd_max
-
-
 class ImageRecon:
-    def __init__(self, params, kmax_img, normalization, dcfnet="unet", method="kbnufft"):
+    def __init__(self, params, kmax_img, normalization, dcfnet="unet"):
         """medhod must be one of: ['kbnufft', 'mirtorch', 'nudft'].
-        'nudft' is very slow and should only be used for debugging."""
+        'kbnufft': uses dcfnet for fast differentiable dcf computation,
+        'mirtorch': uses calc_density_compensation_function from torchkbnufft. Not differentiable.
+        'nudft': very slow and should only be used for debugging."""
         self.kmax_img = kmax_img
         self.img_size = params["img_size"]
         self.normalization = normalization
         self.timesteps = params["timesteps"]
         self.zero_filling = params["zero_filling"]
         self.n_petals = params["n_petals"]
-        self.method = method
-        self.dcfnet = UNet1D(in_channels=2, out_channels=1, features=[16, 32, 64, 128, 256])
-        dcfdict = torch.load(f"dcfnet_{self.dcfnet.name}.pt")
+        if dcfnet == "unet":
+            self.dcfnet = UNet1D(in_channels=2, out_channels=1, features=[16, 32, 64, 128, 256])
+        else:
+            self.dcfnet = FCN1D(channels=[2, 128, 256, 512, 256, 128, 1], kernel_size=21)
+        dcfdict = torch.load(f"trained_models/dcfnet_{self.dcfnet.name}.pt")
         self.dcfnet.load_state_dict(dcfdict)
 
     def sample_k_space_values(self, fft, rosette):
@@ -85,11 +43,11 @@ class ImageRecon:
             sampled[:, :, -2:] *= 0
         return rosette, sampled
 
-    def reconstruct_img(self, fft, rosette):
+    def reconstruct_img(self, fft, rosette, method="kbnufft"):
         rosette, sampled = self.sample_k_space_values(fft, rosette)
-        if self.method == "mirtorch":
+        if method == "mirtorch":
             return self.reconstruct_img_mirtorch(rosette, sampled)
-        if self.method == "kbnufft":
+        if method == "kbnufft":
             return self.reconstruct_img_kbnufft(rosette, sampled)
         return self.reconstruct_img_nudft(rosette, sampled)
 
@@ -147,51 +105,6 @@ class ImageRecon:
         return w
 
 
-def compute_derivatives(traj, dt):
-    """Compute the first and second derivatives of a trajectory.
-    traj: (timesteps, 2) tensor
-    dt: time step size (scalar)
-    Returns: d_traj, dd_traj
-    """
-    # traj = traj[:-1, :]
-    d_traj = (torch.roll(traj, shifts=-1, dims=0) - traj) / dt
-    dd_traj = (torch.roll(d_traj, shifts=-1, dims=0) - d_traj) / dt
-    return d_traj, dd_traj
-
-
-def threshold_loss(x, threshold):
-    threshold_loss = torch.max(torch.abs(x), dim=0).values - threshold
-    threshold_loss[threshold_loss < 0] = 0.0
-    return threshold_loss**2
-
-
-def grad_slew_loss(d_max_rosette, dd_max_rosette, params, mode="exp"):
-    """Compute a loss based on the slew rate of the trajectory.
-    traj: (timesteps, 2) tensor
-    dt: time step size (scalar)
-    Returns: slew_loss (scalar)
-    """
-    if mode == "exp":
-        grad_loss = torch.exp(d_max_rosette - params["grad_max"] * params["gamma"] / 1000)
-        slew_loss = torch.exp(dd_max_rosette - params["slew_rate"] * params["gamma"] / 1000)
-    elif mode == "threshold":
-        grad_loss = threshold_loss(d_max_rosette, params["grad_max"] * params["gamma"] / 1000)
-        slew_loss = threshold_loss(dd_max_rosette, params["slew_rate"] * params["gamma"] / 1000)
-    else:
-        grad_loss = torch.zeros(1)
-        slew_loss = torch.zeros(1)
-    return params["grad_loss_weight"] * grad_loss.sum(), params["slew_loss_weight"] * slew_loss.sum()
-
-
-def mse_loss(img, target):
-    return torch.mean((img - target) ** 2)
-
-
-def l1_loss(img, target):
-    loss = torch.mean((img - target).abs())
-    return loss
-
-
 class MySSIMLoss(nn.Module):
     def __init__(self, window_size=11, reduction="mean", max_val=1.0):
         super(MySSIMLoss, self).__init__()
@@ -203,15 +116,54 @@ class MySSIMLoss(nn.Module):
         return loss
 
 
-def get_loss_fcn(name):
-    if name.upper() == "L1":
-        return l1_loss
-    if name.upper() == "SSIM":
-        return MySSIMLoss(window_size=11, reduction="mean", max_val=1.0)
-    if name.lower() == "combined":
-        ssim_loss = MySSIMLoss(window_size=11, reduction="mean", max_val=1.0)
-        return lambda x, y: 0.1 * ssim_loss(x, y) + l1_loss(x, y)
-    return mse_loss
+class LossCollection:
+    def __init__(self, template="L2"):
+        self.use_loss(template)
+
+    def set_default_loss(self):
+        if self.template.upper() == "L2":
+            self.loss_fn = self.mse_loss
+        if self.template.upper() == "L1":
+            self.loss_fn = self.l1_loss
+        if self.template.upper() == "SSIM":
+            self.loss_fn = MySSIMLoss(window_size=11, reduction="mean", max_val=1.0)
+        if self.template.lower() == "combined":
+            ssim_loss = MySSIMLoss(window_size=11, reduction="mean", max_val=1.0)
+            self.loss_fn = lambda x, y: 0.1 * ssim_loss(x, y) + self.l1_loss(x, y)
+
+    def use_loss(self, template):
+        self.template = template
+        self.set_default_loss()
+
+    def mse_loss(self, img, target):
+        return torch.mean((img - target) ** 2)
+
+    def l1_loss(self, img, target):
+        loss = torch.mean((img - target).abs())
+        return loss
+
+    def threshold_loss(self, x, threshold):
+        threshold_loss = torch.max(torch.abs(x), dim=0).values - threshold
+        threshold_loss[threshold_loss < 0] = 0.0
+        return threshold_loss**2
+
+    def grad_slew_loss(self, d_max_rosette, dd_max_rosette, params, mode="exp"):
+        """Compute a loss self,based on the slew rate of the trajectory.
+        traj: (timesteps, 2) tensor
+        dt: time step size (scalar)
+        Returns: slew_loss (scalar)
+        """
+        unit = params["gamma"] / 1000
+        if mode == "exp":
+            grad_loss = torch.exp(0.1 * (d_max_rosette - params["grad_max"] * unit))
+            slew_loss = torch.exp(0.1 * (dd_max_rosette - params["slew_rate"] * unit))
+        elif mode == "threshold":
+            grad_loss = self.threshold_loss(d_max_rosette, params["grad_max"] * unit)
+            slew_loss = self.threshold_loss(dd_max_rosette, params["slew_rate"] * unit)
+        else:
+            grad_loss = torch.zeros(1)
+            slew_loss = torch.zeros(1)
+        return params["grad_loss_weight"] * grad_loss.sum(), params["slew_loss_weight"] * slew_loss.sum()
 
 
 class TrainPlotter:
@@ -223,12 +175,13 @@ class TrainPlotter:
         (grad_loss_line,) = ax_loss.semilogy([], [], label="Grad Loss", linewidth=0.7, color="r")
         (slew_loss_line,) = ax_loss.semilogy([], [], label="Slew Loss", linewidth=0.7, color="g")
         (img_loss_line,) = ax_loss.semilogy([], [], label="Image Loss", linewidth=0.7, color="b")
+        (img_loss_line_mirtorch,) = ax_loss.semilogy([], [], label="Image Loss MIRTorch", linewidth=0.7, color="orange")
         (total_loss_line,) = ax_total_loss.semilogy([], [], label="Total Loss", linewidth=0.7, color="k")
         ax_loss.set_xlabel("Step")
         ax_loss.set_ylabel("Individual Losses")
         ax_loss.set_title("Running Loss")
         ax_total_loss.set_ylabel("Total Loss")
-        lns = [grad_loss_line, slew_loss_line, img_loss_line, total_loss_line]
+        lns = [grad_loss_line, slew_loss_line, img_loss_line, total_loss_line, img_loss_line_mirtorch]
         labs = [l.get_label() for l in lns]
         ax_loss.legend(lns, labs, loc=0, prop={"size": 6})
         im_recon = ax_img.imshow(torch.zeros((img_size, img_size)).numpy(), cmap="gray")
@@ -241,6 +194,7 @@ class TrainPlotter:
         self.grad_loss_line = grad_loss_line
         self.slew_loss_line = slew_loss_line
         self.img_loss_line = img_loss_line
+        self.img_loss_line_mirtorch = img_loss_line_mirtorch
         self.total_loss_line = total_loss_line
         self.im_recon = im_recon
         self.traj_line = traj_line
@@ -251,14 +205,19 @@ class TrainPlotter:
         self.grad_losses = []
         self.slew_losses = []
         self.img_losses = []
+        self.img_losses_mirtorch = []
         self.total_losses = []
 
-    def update(self, step, grad_loss, img_loss, slew_loss, total_loss, recon, traj):
-        self.grad_losses.append(grad_loss)
-        self.img_losses.append(img_loss)
-        self.slew_losses.append(slew_loss)
-        self.total_losses.append(total_loss)
+    def update(self, step, grad_loss, img_loss, slew_loss, total_loss, recon, traj, phantom, fft, rosette, reconstructor, loss_fn):
+        self.grad_losses.append(grad_loss.detach().item())
+        self.img_losses.append(img_loss.detach().item())
+        self.slew_losses.append(slew_loss.detach().item())
+        self.total_losses.append(total_loss.detach().item())
         if step % 10 == 0:
+            recon_mirtorch = reconstructor.reconstruct_img(fft, rosette, method="mirtorch")
+            image_loss_mirtorch = loss_fn(recon_mirtorch, phantom)
+            self.img_losses_mirtorch.append(image_loss_mirtorch.detach().item())
+            self.img_loss_line_mirtorch.set_data(range(0, 10 * len(self.img_losses_mirtorch), 10), self.img_losses_mirtorch)
             self.img_loss_line.set_data(range(len(self.img_losses)), self.img_losses)
             self.grad_loss_line.set_data(range(len(self.grad_losses)), self.grad_losses)
             self.slew_loss_line.set_data(range(len(self.slew_losses)), self.slew_losses)
@@ -272,7 +231,6 @@ class TrainPlotter:
             self.traj_line.set_data(traj[:, 0].detach().cpu().numpy(), traj[:, 1].detach().cpu().numpy())
             self.ax_traj.relim()
             self.ax_traj.autoscale_view()
-            self.ax_traj.set_aspect("equal", "box")
             self.ax_img.set_title(f"Recon (abs) Step {step+1}")
             plt.pause(0.01)
 
@@ -280,15 +238,73 @@ class TrainPlotter:
         print(f"Step {step+1}/{train_steps}")
         for i, param_group in enumerate(optimizer.param_groups):
             print(f"  Learning rate {i}: {param_group['lr']:.7f}")
-        print(f"  Image loss: {image_loss:.6f}")
-        print(f"  Gradient loss: {grad_loss:.6f}")
-        print(f"  Slew rate loss: {slew_loss:.6f}")
-        print(f"  Total loss: {image_loss+grad_loss+slew_loss:.6f}")
+        print(f"  Image loss: {image_loss.detach().item():.6f}")
+        print(f"  Gradient loss: {grad_loss.detach().item():.6f}")
+        print(f"  Slew rate loss: {slew_loss.detach().item():.6f}")
+        print(f"  Total loss: {image_loss.detach().item()+grad_loss.detach().item()+slew_loss.detach().item():.6f}")
         print(f"  Best loss: {best_loss:.6f}")
         print("-" * 100)
 
     def export_figure(self, path):
         self.fig.savefig(os.path.join(path, "train_figure.png"))
+
+
+def get_phantom(size=(512, 512), type="shepp_logan"):
+    """Generate a Shepp-Logan phantom as a PyTorch tensor."""
+    if type.lower() == "shepp_logan":
+        phantom = odl.phantom.shepp_logan(odl.uniform_discr([0, 0], [1, 1], size), modified=True)
+        phantom_np = phantom.asarray()
+    elif type.lower() == "guitar":
+        phantom = Image.open("phantom_images/guitar.jpg").convert("L").resize(size)
+        phantom_np = 1.0 - np.array(phantom) / 255.0
+    else:
+        phantom = Image.open("phantom_images/GLPU/GLPU.png").convert("L").resize(size)
+        phantom_np = np.array(phantom) / 255.0
+    phantom_tensor = torch.from_numpy(phantom_np).float()
+    return phantom_tensor
+
+
+def get_rotation_matrix(n_petals, device=torch.device("cpu")):
+    angle_radians = 2 * torch.pi / n_petals
+    angle_radians = torch.Tensor([angle_radians])
+    rotation_matrix = torch.tensor(
+        [
+            [torch.cos(angle_radians), -torch.sin(angle_radians)],
+            [torch.sin(angle_radians), torch.cos(angle_radians)],
+        ]
+    ).to(device)
+    return rotation_matrix
+
+
+def make_rosette(traj, rotation_matrix, n_petals, kmax_img, dt, zero_filling=True):
+    rotated_trajectories = [traj]
+    for i in range(n_petals - 1):
+        traj = traj @ rotation_matrix.T
+        rotated_trajectories.append(traj)
+    d_max, dd_max = torch.zeros(1, 2, device=traj.device), torch.zeros(1, 2, device=traj.device)
+    for t in rotated_trajectories[: n_petals // 4 + 1]:
+        d, dd = compute_derivatives(t, dt)
+        d_max = torch.maximum(d.abs().max(dim=0).values, d_max)
+        dd_max = torch.maximum(dd.abs().max(dim=0).values, d_max)
+    if zero_filling:
+        corners = torch.ones(2, 2, device=traj.device)
+        corners[0] *= kmax_img
+        corners[1] *= -kmax_img
+        rotated_trajectories.append(corners)
+    rosette = torch.cat(rotated_trajectories, dim=0)
+    return rosette, d_max, dd_max
+
+
+def compute_derivatives(traj, dt):
+    """Compute the first and second derivatives of a trajectory.
+    traj: (timesteps, 2) tensor
+    dt: time step size (scalar)
+    Returns: d_traj, dd_traj
+    """
+    # traj = traj[:-1, :]
+    d_traj = (torch.roll(traj, shifts=-1, dims=0) - traj) / dt
+    dd_traj = (torch.roll(d_traj, shifts=-1, dims=0) - d_traj) / dt
+    return d_traj, dd_traj
 
 
 def save_checkpoint(path, model, d_max_rosette, dd_max_rosette, params):
@@ -361,5 +377,5 @@ def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=Tru
         plt.savefig(os.path.join(export_path, "final_figure.png"), dpi=300)
     if show:
         plt.show()
-    plt.close()
+        # plt.close()
     return im1, im2, im3, im4, im5, im6

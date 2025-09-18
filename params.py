@@ -1,14 +1,13 @@
-import math
 import os
 from datetime import datetime
 
 export_path = os.path.join("results", datetime.now().strftime("%Y-%m-%d_%H-%M"))
 
 params = {
-    "train_steps": 1000,
-    "lr": 2e-4,
-    "grad_loss_weight": 2e-3,
-    "slew_loss_weight": 2e-4,
+    "train_steps": 10000,
+    "lr": 1e-3,
+    "grad_loss_weight": 3e-3,
+    "slew_loss_weight": 3e-3,
     "zero_filling": True,
     "timesteps": 101,
     "duration": 0.5,  # ms
@@ -20,7 +19,7 @@ params = {
     "res": 50,
     "n_petals": 80,
     "model_size": 11,  # number of Fourier coefficients
-    "loss_function": "L2",
+    "loss_function": "combined",
 }
 
 kmax_traj = params["res"] / (2 * params["FoV"])  # 1/m
