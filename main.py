@@ -28,7 +28,7 @@ t = torch.linspace(0, params["duration"], steps=params["timesteps"]).unsqueeze(1
 model = FourierCurve(tmin=0, tmax=params["duration"], initial_max=kmax_traj, n_coeffs=params["model_size"])
 # model = Ellipse(tmin=0, tmax=params["duration"], initial_max=kmax_traj).to(device)
 optimizer = torch.optim.SGD(model.parameters(), lr=params["lr"])
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=200, factor=0.5, min_lr=1e-6, threshold=1e-6, cooldown=100)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=300, factor=0.5, min_lr=1e-6, threshold=1e-6, cooldown=100)
 
 loss_fcns = LossCollection(params["loss_function"])
 reconstructor = ImageRecon(params, kmax_img, normalization, dcfnet="unet")
@@ -56,7 +56,7 @@ for step in range(params["train_steps"]):
     plotter.print_info(step, params["train_steps"], image_loss, grad_loss, slew_loss, best_loss, optimizer)
     if total_loss.detach().item() < 0.999 * best_loss and step > 100:
         best_loss = total_loss.detach().item()
-        slew_rate = save_checkpoint(export_path, model, d_max_rosette, dd_max_rosette, params)
+        slew_rate = save_checkpoint(export_path, model, d_max_rosette, dd_max_rosette, params, rosette)
         plotter.export_figure(export_path)
         final_plots(phantom, recon, initial_recon, plotter.total_losses, traj, slew_rate, show=False, export=True, export_path=export_path)
 
