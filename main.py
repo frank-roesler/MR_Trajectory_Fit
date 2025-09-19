@@ -1,11 +1,11 @@
 from utils import (
-    get_phantom,
-    make_rosette,
     LossCollection,
     ImageRecon,
     TrainPlotter,
+    Checkpointer,
+    get_phantom,
+    make_rosette,
     final_plots,
-    save_checkpoint,
     get_rotation_matrix,
 )
 import matplotlib.pyplot as plt
@@ -32,7 +32,8 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=300, 
 
 loss_fcns = LossCollection(params["loss_function"])
 reconstructor = ImageRecon(params, kmax_img, normalization, dcfnet="unet")
-plotter = TrainPlotter(params["img_size"])
+plotter = TrainPlotter(params["img_size"], fft, reconstructor, phantom, loss_fcns.loss_fn)
+checkpointer = Checkpointer(export_path, params, dt)
 
 with torch.no_grad():
     rosette, _, _ = make_rosette(model(t), rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
@@ -56,11 +57,10 @@ for step in range(params["train_steps"]):
     plotter.print_info(step, params["train_steps"], image_loss, grad_loss, slew_loss, best_loss, optimizer)
     if total_loss.detach().item() < 0.999 * best_loss and step > 100:
         best_loss = total_loss.detach().item()
-        slew_rate = save_checkpoint(export_path, model, d_max_rosette, dd_max_rosette, params, rosette)
+        slew_rate = checkpointer.save_checkpoint(model, d_max_rosette, dd_max_rosette, rosette)
         plotter.export_figure(export_path)
         final_plots(phantom, recon, initial_recon, plotter.total_losses, traj, slew_rate, show=False, export=True, export_path=export_path)
-
-    plotter.update(step, grad_loss, image_loss, slew_loss, total_loss, recon, traj, phantom, fft, rosette, reconstructor, loss_fcns.loss_fn)
+    plotter.update(step, grad_loss, image_loss, slew_loss, total_loss, recon, traj, rosette)
 
 
 plotter.export_figure(export_path)

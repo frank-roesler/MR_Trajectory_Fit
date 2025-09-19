@@ -6,7 +6,7 @@ from utils import (
     get_rotation_matrix,
     plot_pixel_rosette,
     compute_derivatives,
-    export_json,
+    Checkpointer,
 )
 import matplotlib.pyplot as plt
 from mirtorch.linear import FFTCn
@@ -16,14 +16,17 @@ from os.path import join, dirname
 
 
 recon_method = "mirtorch"
-path = "results/2025-09-18_10-07_GOOD/checkpoint.pt"
-checkpoint = torch.load(path)
+path = "results/2025-09-18_22-31"
+checkpointer = Checkpointer(path, {}, None)
+checkpoint = checkpointer.load_checkpoint()
 params = checkpoint["params"]
 kmax_traj = params["res"] / (2 * params["FoV"])  # 1/m
 kmax_img = params["img_size"] / (2 * params["FoV"])  # 1/m
-dt = params["duration"] / (params["timesteps"] - 1)
 normalization = 4 / params["img_size"] ** 2
 
+params["timesteps"] = params["timesteps"] // 2 + 1
+dt = params["duration"] / (params["timesteps"] - 1)
+checkpointer.dt = dt
 
 phantom = get_phantom(size=(params["img_size"], params["img_size"]), type="glpu")
 
@@ -44,8 +47,10 @@ model.load_state_dict(checkpoint["model_state_dict"])
 
 with torch.no_grad():
     traj = model(t)  # (timesteps, 2)
-    rosette, _, _ = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
+    rosette, d, dd = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     recon = reconstructor.reconstruct_img(fft, rosette, method=recon_method)
+
+checkpointer.export_json(rosette)
 
 
 im1, im2, im3, im4, im5, im6 = final_plots(phantom, recon, initial_recon, [], traj, checkpoint["slew_rate"], show=False, export=True, export_path=join(dirname(path), recon_method))
