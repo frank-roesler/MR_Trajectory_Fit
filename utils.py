@@ -169,7 +169,11 @@ class LossCollection:
 
 
 class TrainPlotter:
-    def __init__(self, img_size):
+    def __init__(self, img_size, fft, reconstructor, phantom, loss_fn):
+        self.fft = fft
+        self.reconstructor = reconstructor
+        self.phantom = phantom
+        self.loss_fn = loss_fn
         plt.rc("xtick", labelsize=8)
         plt.rc("ytick", labelsize=8)
         self.fig, (ax_loss, ax_img, ax_traj) = plt.subplots(1, 3, figsize=(15, 4), constrained_layout=True)
@@ -210,14 +214,14 @@ class TrainPlotter:
         self.img_losses_mirtorch = []
         self.total_losses = []
 
-    def update(self, step, grad_loss, img_loss, slew_loss, total_loss, recon, traj, phantom, fft, rosette, reconstructor, loss_fn):
+    def update(self, step, grad_loss, img_loss, slew_loss, total_loss, recon, traj, rosette):
         self.grad_losses.append(grad_loss.detach().item())
         self.img_losses.append(img_loss.detach().item())
         self.slew_losses.append(slew_loss.detach().item())
         self.total_losses.append(total_loss.detach().item())
         if step % 10 == 0:
-            recon_mirtorch = reconstructor.reconstruct_img(fft, rosette, method="mirtorch")
-            image_loss_mirtorch = loss_fn(recon_mirtorch, phantom)
+            recon_mirtorch = self.reconstructor.reconstruct_img(self.fft, rosette, method="mirtorch")
+            image_loss_mirtorch = self.loss_fn(recon_mirtorch, self.phantom)
             self.img_losses_mirtorch.append(image_loss_mirtorch.detach().item())
             self.img_loss_line_mirtorch.set_data(range(0, 10 * len(self.img_losses_mirtorch), 10), self.img_losses_mirtorch)
             self.img_loss_line.set_data(range(len(self.img_losses)), self.img_losses)
@@ -249,6 +253,87 @@ class TrainPlotter:
 
     def export_figure(self, path):
         self.fig.savefig(os.path.join(path, "train_figure.png"))
+
+
+class Checkpointer:
+    def __init__(self, path, params, dt):
+        self.path = path
+        self.params = params
+        self.dt = dt
+
+    def export_json(self, rosette):
+        shift = self.params["timesteps"] - 1
+
+        petals = [rosette[i * shift : (i + 1) * shift, :] for i in range(self.params["n_petals"])]
+
+        grads = [1000 / self.params["gamma"] * compute_derivatives(p, self.dt)[0] for p in petals]
+        slews = [1000 / self.params["gamma"] * compute_derivatives(p, self.dt)[1] for p in petals]
+
+        grad_norms = [g.abs().max(dim=0).values for g in grads]
+
+        grads_normalized = [g / n for g, n in zip(grads, grad_norms)]
+
+        slew_max = torch.zeros(2)
+        for s in slews:
+            slew_max = torch.maximum(slew_max, s.abs().max(dim=0).values)
+
+        maxSlewX = slew_max[0].item()
+        maxSlewY = slew_max[1].item()
+        GxMax = [max(g[:, 0].abs()).item() for g in grads]
+        GyMax = [max(g[:, 1].abs()).item() for g in grads]
+        Gx = [p[:, 0].tolist() for p in grads_normalized]
+        Gy = [p[:, 1].tolist() for p in grads_normalized]
+
+        export_data = {
+            "specBW": 2000,
+            "specRes": 325,
+            "FoV": self.params["FoV"],
+            "res": self.params["res"],
+            "preEmMom": 24,
+            "preEmPts": 10,
+            "pdlNo": self.params["n_petals"],
+            "pdlPts": self.params["timesteps"] - 1,
+            "info": {
+                "maxSlewX": maxSlewX,
+                "maxSlewY": maxSlewY,
+            },
+            "trj": {
+                "GxMax": GxMax,
+                "GyMax": GyMax,
+                "Gx": Gx,
+                "Gy": Gy,
+            },
+        }
+        with open(self.export_path, "w") as f:
+            json.dump(export_data, f, indent=4)
+
+    def save_checkpoint(self, model, d_max_rosette, dd_max_rosette, rosette):
+        os.makedirs(self.export_path, exist_ok=True)
+        grad = 1000 / self.params["gamma"] * d_max_rosette
+        slew = 1000 / self.params["gamma"] * dd_max_rosette
+        torch.save(
+            {
+                "model_state_dict": model.state_dict(),
+                "model_name": model.name,
+                "params": self.params,
+                "slew_rate": slew,
+                "gradient": grad,
+            },
+            os.path.join(self.path, "checkpoint.pt"),
+        )
+        self.export_json(rosette, self.dt, self.params, join(self.path, "traj_data.json"))
+
+        print("=" * 100)
+        print("CHECKPOINT SAVED")
+        print("Slew Rate:", slew)
+        print("=" * 100)
+        return slew
+
+    def load_checkpoint(self):
+        checkpoint = torch.load(os.path.join(self.path, "checkpoint.pt"))
+        self.params = checkpoint["params"]
+        self.dt = self.params["duration"] / (self.params["timesteps"] - 1)
+        return checkpoint
 
 
 def get_phantom(size=(512, 512), type="shepp_logan"):
@@ -309,29 +394,6 @@ def compute_derivatives(traj, dt):
     return d_traj, dd_traj
 
 
-def save_checkpoint(path, model, d_max_rosette, dd_max_rosette, params, rosette):
-    os.makedirs(path, exist_ok=True)
-    grad = 1000 / params["gamma"] * d_max_rosette
-    slew = 1000 / params["gamma"] * dd_max_rosette
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "model_name": model.name,
-            "params": params,
-            "slew_rate": slew,
-            "gradient": grad,
-        },
-        os.path.join(path, "checkpoint.pt"),
-    )
-    export_json(rosette, params, join(path, "traj_data.json"))
-
-    print("=" * 100)
-    print("CHECKPOINT SAVED")
-    print("Slew Rate:", slew)
-    print("=" * 100)
-    return slew
-
-
 def plot_pixel_rosette(rosette, fft, img_size, ax=None):
     """Sample FFT at trajectory locations"""
     sampled_coord_x = torch.round((rosette[0, 0, :, 0] + 1) * (img_size - 1) / 2)
@@ -384,48 +446,3 @@ def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=Tru
     else:
         plt.close()
     return im1, im2, im3, im4, im5, im6
-
-
-def export_json(rosette, params, export_path):
-    dt = params["duration"] / (params["timesteps"] - 1)
-    shift = params["timesteps"] - 1
-
-    petals = [rosette[i * shift : (i + 1) * shift, :] for i in range(params["n_petals"])]
-    petal_norms = [torch.sqrt(p[:, 0] ** 2 + p[:, 1] ** 2).max() for p in petals]
-    petals_normalized = [p / n for p, n in zip(petals, petal_norms)]
-
-    grads = [1000 / params["gamma"] * compute_derivatives(p, dt)[0] for p in petals]
-    slews = [1000 / params["gamma"] * compute_derivatives(p, dt)[1] for p in petals]
-    slew_max = torch.zeros(2)
-    for s in slews:
-        slew_max = torch.maximum(slew_max, s.abs().max(dim=0).values)
-
-    maxSlewX = slew_max[0].item()
-    maxSlewY = slew_max[1].item()
-    GxMax = [max(g[:, 0].abs()).item() for g in grads]
-    GyMax = [max(g[:, 1].abs()).item() for g in grads]
-    Gx = [p[:, 0].tolist() for p in petals_normalized]
-    Gy = [p[:, 1].tolist() for p in petals_normalized]
-
-    export_data = {
-        "specBW": 2000,
-        "specRes": 325,
-        "FoV": params["FoV"],
-        "res": params["res"],
-        "preEmMom": 24,
-        "preEmPts": 10,
-        "pdlNo": params["n_petals"],
-        "pdlPts": params["timesteps"],
-        "info": {
-            "maxSlewX": maxSlewX,
-            "maxSlewY": maxSlewY,
-        },
-        "trj": {
-            "GxMax": GxMax,
-            "GyMax": GyMax,
-            "Gx": Gx,
-            "Gy": Gy,
-        },
-    }
-    with open(export_path, "w") as f:
-        json.dump(export_data, f, indent=4)
