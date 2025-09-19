@@ -67,15 +67,6 @@ Tested with:
 
 See `requirements.txt` for the full list.
 
-## License
-
-MIT License. See `Nufftbindings/LICENSE` for details.
-
-## References
-
-- [Off-the-grid data-driven optimization of sampling schemes in MRI](https://arxiv.org/pdf/2010.01817.pdf)
-- [Bayesian Optimization of Sampling Densities in MRI](https://arxiv.org/pdf/2209.07170.pdf)
-
 ---
 
 **Note:** This project uses external packages and libraries for core MRI operations and NUFFT functionality. Please cite the respective repositories if you use them in your work.
