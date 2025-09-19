@@ -10,6 +10,8 @@
 - Visualization and plotting utilities for training and results
 - Modular design for research and experimentation
 
+![Example output](https://github.com/frank-roesler/MR_Trajectory_Fit/blob/main/final_figure.png)
+
 ## Project Structure
 
 - `main.py` — Main training and evaluation script
