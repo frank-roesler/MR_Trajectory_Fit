@@ -41,6 +41,7 @@
 
    Additional requirements for NUFFT backends:
    - [torchkbnufft](https://github.com/mmuckley/torchkbnufft)
+   - [Bindings-NUFFT-pytorch](https://github.com/albangossard/Bindings-NUFFT-pytorch)
    - [MIRTorch](https://github.com/mmuckley/mirtorch)
 
 ## Usage
