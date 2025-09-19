@@ -304,7 +304,7 @@ class Checkpointer:
                 "Gy": Gy,
             },
         }
-        with open(self.export_path, "w") as f:
+        with open(self.path, "w") as f:
             json.dump(export_data, f, indent=4)
 
     def save_checkpoint(self, model, d_max_rosette, dd_max_rosette, rosette):

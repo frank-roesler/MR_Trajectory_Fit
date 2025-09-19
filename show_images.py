@@ -24,7 +24,7 @@ kmax_traj = params["res"] / (2 * params["FoV"])  # 1/m
 kmax_img = params["img_size"] / (2 * params["FoV"])  # 1/m
 normalization = 4 / params["img_size"] ** 2
 
-params["timesteps"] = params["timesteps"] // 2 + 1
+# params["timesteps"] = params["timesteps"] // 2 + 1
 dt = params["duration"] / (params["timesteps"] - 1)
 checkpointer.dt = dt
 
@@ -50,10 +50,10 @@ with torch.no_grad():
     rosette, d, dd = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     recon = reconstructor.reconstruct_img(fft, rosette, method=recon_method)
 
-checkpointer.export_json(rosette)
+# checkpointer.export_json(rosette)
 
 
-im1, im2, im3, im4, im5, im6 = final_plots(phantom, recon, initial_recon, [], traj, checkpoint["slew_rate"], show=False, export=True, export_path=join(dirname(path), recon_method))
+im1, im2, im3, im4, im5, im6 = final_plots(phantom, recon, initial_recon, [], traj, checkpoint["slew_rate"], show=False, export=True, export_path=join(path, recon_method))
 # im2.set_clim(0, 1)
 # im3.set_clim(0, 1)
 # im4.set_clim(0, 1)
