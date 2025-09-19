@@ -41,9 +41,6 @@
 
    Additional requirements for NUFFT backends:
    - [torchkbnufft](https://github.com/mmuckley/torchkbnufft)
-   - [cufinufft](https://github.com/flatironinstitute/cufinufft/)
-   - [PyNFFT](https://github.com/pyNFFT/pyNFFT)
-   - [pykeops](https://www.kernel-operations.io/keops/python/installation.html)
    - [MIRTorch](https://github.com/mmuckley/mirtorch)
 
 ## Usage
