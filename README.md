@@ -10,6 +10,8 @@
 - Visualization and plotting utilities for training and results
 - Modular design for research and experimentation
 
+![Example output](https://github.com/frank-roesler/MR_Trajectory_Fit/blob/main/final_figure.png)
+
 ## Project Structure
 
 - `main.py` — Main training and evaluation script
@@ -39,9 +41,7 @@
 
    Additional requirements for NUFFT backends:
    - [torchkbnufft](https://github.com/mmuckley/torchkbnufft)
-   - [cufinufft](https://github.com/flatironinstitute/cufinufft/)
-   - [PyNFFT](https://github.com/pyNFFT/pyNFFT)
-   - [pykeops](https://www.kernel-operations.io/keops/python/installation.html)
+   - [Bindings-NUFFT-pytorch](https://github.com/albangossard/Bindings-NUFFT-pytorch)
    - [MIRTorch](https://github.com/mmuckley/mirtorch)
 
 ## Usage
@@ -66,15 +66,6 @@ Tested with:
 - Numpy, Matplotlib, Kornia, ODL, etc.
 
 See `requirements.txt` for the full list.
-
-## License
-
-MIT License. See `Nufftbindings/LICENSE` for details.
-
-## References
-
-- [Off-the-grid data-driven optimization of sampling schemes in MRI](https://arxiv.org/pdf/2010.01817.pdf)
-- [Bayesian Optimization of Sampling Densities in MRI](https://arxiv.org/pdf/2209.07170.pdf)
 
 ---
 
