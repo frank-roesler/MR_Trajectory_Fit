@@ -25,9 +25,9 @@ fft = fft.reshape(1, 1, params["img_size"], params["img_size"])
 rotation_matrix = get_rotation_matrix(params["n_petals"], device=device).detach()
 t = torch.linspace(0, params["duration"], steps=params["timesteps"]).unsqueeze(1).to(device)  # (timesteps, 1)
 
-model = FourierCurve(tmin=0, tmax=params["duration"], initial_max=kmax_traj, n_coeffs=params["model_size"])
+model = FourierCurve(tmin=0, tmax=params["duration"], initial_max=kmax_traj, n_coeffs=params["model_size"], coeff_lvl=1e-1)
 # model = Ellipse(tmin=0, tmax=params["duration"], initial_max=kmax_traj).to(device)
-optimizer = torch.optim.SGD(model.parameters(), lr=params["lr"])
+optimizer = torch.optim.Adam(model.parameters(), lr=params["lr"])
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=300, factor=0.5, min_lr=1e-6, threshold=1e-6, cooldown=100)
 
 loss_fcns = LossCollection(params["loss_function"])

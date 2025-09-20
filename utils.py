@@ -304,11 +304,11 @@ class Checkpointer:
                 "Gy": Gy,
             },
         }
-        with open(self.path, "w") as f:
+        with open(join(self.path, "traj_data.json"), "w") as f:
             json.dump(export_data, f, indent=4)
 
     def save_checkpoint(self, model, d_max_rosette, dd_max_rosette, rosette):
-        os.makedirs(self.export_path, exist_ok=True)
+        os.makedirs(self.path, exist_ok=True)
         grad = 1000 / self.params["gamma"] * d_max_rosette
         slew = 1000 / self.params["gamma"] * dd_max_rosette
         torch.save(
@@ -321,7 +321,7 @@ class Checkpointer:
             },
             os.path.join(self.path, "checkpoint.pt"),
         )
-        self.export_json(rosette, self.dt, self.params, join(self.path, "traj_data.json"))
+        self.export_json(rosette)
 
         print("=" * 100)
         print("CHECKPOINT SAVED")
