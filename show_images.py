@@ -6,20 +6,23 @@ from utils import (
     get_rotation_matrix,
     plot_pixel_rosette,
     compute_derivatives,
+    export_k_as_csv,
     Checkpointer,
 )
 import matplotlib.pyplot as plt
 from mirtorch.linear import FFTCn
 from models import FourierCurve
 import torch
-from os.path import join, dirname
+from os.path import join
+import copy
 
 
 recon_method = "mirtorch"
 path = "results/2025-09-18_22-31"
 checkpointer = Checkpointer(path, {}, None)
 checkpoint = checkpointer.load_checkpoint()
-params = checkpoint["params"]
+params = copy.deepcopy(checkpoint["params"])
+
 kmax_traj = params["res"] / (2 * params["FoV"])  # 1/m
 kmax_img = params["img_size"] / (2 * params["FoV"])  # 1/m
 normalization = 4 / params["img_size"] ** 2
@@ -50,33 +53,39 @@ with torch.no_grad():
     rosette, d, dd = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     recon = reconstructor.reconstruct_img(fft, rosette, method=recon_method)
 
-# checkpointer.export_json(rosette)
+with torch.no_grad():
+    t_json = torch.linspace(0, checkpointer.params["duration"], steps=checkpointer.params["timesteps"]).unsqueeze(1)
+    traj_json = model(t_json)  # (timesteps, 2)
+    rosette_json, _, _ = make_rosette(traj_json, rotation_matrix, checkpointer.params["n_petals"], kmax_img, checkpointer.dt, zero_filling=checkpointer.params["zero_filling"])
+
+export_k_as_csv(traj, path)
+checkpointer.export_json(rosette_json)
 
 
-im1, im2, im3, im4, im5, im6 = final_plots(phantom, recon, initial_recon, [], traj, checkpoint["slew_rate"], show=False, export=False, export_path=join(path, recon_method))
-im2.set_clim(0, 1)
-im3.set_clim(0, 1)
-im4.set_clim(0, 1)
+# im1, im2, im3, im4, im5, im6 = final_plots(phantom, recon, initial_recon, [], traj, checkpoint["slew_rate"], show=False, export=True, export_path=join(path, recon_method))
+# im2.set_clim(0, 1)
+# im3.set_clim(0, 1)
+# im4.set_clim(0, 1)
 
-rosette, sampled = reconstructor.sample_k_space_values(fft, rosette)
-sampled_from_pixels = plot_pixel_rosette(rosette / kmax_img, fft, phantom.shape[-1])
-plt.figure()
-plt.plot(sampled.squeeze().detach().cpu(), label="F.grid_sample", linewidth=0.7)
-plt.plot(sampled_from_pixels.squeeze().detach().cpu(), label="Indexing", linewidth=0.7)
-plt.legend()
+# rosette, sampled = reconstructor.sample_k_space_values(fft, rosette)
+# sampled_from_pixels = plot_pixel_rosette(rosette / kmax_img, fft, phantom.shape[-1])
+# plt.figure()
+# plt.plot(sampled.squeeze().detach().cpu(), label="F.grid_sample", linewidth=0.7)
+# plt.plot(sampled_from_pixels.squeeze().detach().cpu(), label="Indexing", linewidth=0.7)
+# plt.legend()
 
-fig, ax = plt.subplots(1, 2, figsize=(11, 5))
-ax[0].plot(rosette[0, 0, :-2, 0].detach().cpu(), rosette[0, 0, :-2, 1].detach().cpu(), linewidth=0.7)
-ax[1].plot(traj[:, 0].detach().cpu(), traj[:, 1].detach().cpu(), linewidth=0.7, marker=".", markersize=3)
-ax[1].set_aspect("equal", "box")
-ax[0].set_aspect("equal", "box")
+# fig, ax = plt.subplots(1, 2, figsize=(11, 5))
+# ax[0].plot(rosette[0, 0, :-2, 0].detach().cpu(), rosette[0, 0, :-2, 1].detach().cpu(), linewidth=0.7)
+# ax[1].plot(traj[:, 0].detach().cpu(), traj[:, 1].detach().cpu(), linewidth=0.7, marker=".", markersize=3)
+# ax[1].set_aspect("equal", "box")
+# ax[0].set_aspect("equal", "box")
 
-fig, ax = plt.subplots(1, 2)
-im = ax[0].imshow(phantom[:, :].numpy(), cmap="gray")
-ax[0].set_title("Phantom")
-ax[0].axis("off")
-fig.colorbar(im, ax=ax[0])
-ax[1].imshow(torch.log(torch.abs(fft.squeeze()) + 1e-9).numpy(), cmap="gray")
-ax[1].set_title("Log FFT Magnitude")
-ax[1].axis("off")
-plt.show()
+# fig, ax = plt.subplots(1, 2)
+# im = ax[0].imshow(phantom[:, :].numpy(), cmap="gray")
+# ax[0].set_title("Phantom")
+# ax[0].axis("off")
+# fig.colorbar(im, ax=ax[0])
+# ax[1].imshow(torch.log(torch.abs(fft.squeeze()) + 1e-9).numpy(), cmap="gray")
+# ax[1].set_title("Log FFT Magnitude")
+# ax[1].axis("off")
+# plt.show()

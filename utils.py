@@ -169,11 +169,15 @@ class LossCollection:
 
 
 class TrainPlotter:
-    def __init__(self, img_size, fft, reconstructor, phantom, loss_fn):
+    def __init__(self, params, fft, reconstructor, phantom, loss_fn, optimizer):
+        self.best_loss = float("inf")
+        self.train_steps = params["train_steps"]
+        self.gamma = params["gamma"]
         self.fft = fft
         self.reconstructor = reconstructor
         self.phantom = phantom
         self.loss_fn = loss_fn
+        self.optimizer = optimizer
         plt.rc("xtick", labelsize=8)
         plt.rc("ytick", labelsize=8)
         self.fig, (ax_loss, ax_img, ax_traj) = plt.subplots(1, 3, figsize=(15, 4), constrained_layout=True)
@@ -190,7 +194,7 @@ class TrainPlotter:
         lns = [grad_loss_line, slew_loss_line, img_loss_line, total_loss_line, img_loss_line_mirtorch]
         labs = [l.get_label() for l in lns]
         ax_loss.legend(lns, labs, loc=0, prop={"size": 6})
-        im_recon = ax_img.imshow(torch.zeros((img_size, img_size)).numpy(), cmap="gray")
+        im_recon = ax_img.imshow(torch.zeros((params["img_size"], params["img_size"])).numpy(), cmap="gray")
         ax_img.set_title("Recon (abs)")
         ax_img.axis("off")
         (traj_line,) = ax_traj.plot([], [], label="trajectory", linewidth=0.7, marker=".", markersize=3)
@@ -240,16 +244,20 @@ class TrainPlotter:
             self.ax_img.set_title(f"Recon (abs) Step {step+1}")
             plt.pause(0.01)
 
-    def print_info(self, step, train_steps, image_loss, grad_loss, slew_loss, best_loss, optimizer):
-        print(f"Step {step+1}/{train_steps}")
-        for i, param_group in enumerate(optimizer.param_groups):
-            print(f"  Learning rate {i}: {param_group['lr']:.7f}")
-        print(f"  Image loss: {image_loss.detach().item():.6f}")
-        print(f"  Gradient loss: {grad_loss.detach().item():.6f}")
-        print(f"  Slew rate loss: {slew_loss.detach().item():.6f}")
-        print(f"  Total loss: {image_loss.detach().item()+grad_loss.detach().item()+slew_loss.detach().item():.6f}")
-        print(f"  Best loss: {best_loss:.6f}")
-        print("-" * 100)
+    def print_info(self, step, image_loss, grad_loss, slew_loss, d_max, dd_max):
+        if step % 10 == 0:
+            print(f"Step {step+1}/{self.train_steps}")
+            for i, param_group in enumerate(self.optimizer.param_groups):
+                print(f"  Learning rate {i}: {param_group['lr']:.7f}")
+            print(f"  Image loss: {image_loss.detach().item():.6f}")
+            print(f"  Gradient loss: {grad_loss.detach().item():.6f}")
+            print(f"  Slew rate loss: {slew_loss.detach().item():.6f}")
+            print(f"  Total loss: {image_loss.detach().item()+grad_loss.detach().item()+slew_loss.detach().item():.6f}")
+            print(f"  Best loss: {self.best_loss:.6f}")
+            print("-" * 100)
+            print(f"Gradient:{1000 / self.gamma * d_max.max().item():.2f}")
+            print(f"Slew Rate:{1000 / self.gamma * dd_max.max().item():.2f}")
+            print("=" * 100)
 
     def export_figure(self, path):
         self.fig.savefig(os.path.join(path, "train_figure.png"))
@@ -446,3 +454,12 @@ def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=Tru
     else:
         plt.close()
     return im1, im2, im3, im4, im5, im6
+
+
+def export_k_as_csv(traj, path):
+    os.makedirs(path, exist_ok=True)
+    traj_np = traj.detach().cpu().numpy()
+    traj_abs = np.linalg.norm(traj_np, axis=1)
+    max_abs_point = np.argmax(traj_abs)
+    np.savetxt(os.path.join(path, "k_trajectory.csv"), traj_np, delimiter=",")
+    np.savetxt(os.path.join(path, "k_trajectory_maxpt.csv"), np.array([[max_abs_point, 0], [max_abs_point, 1]]), delimiter=",")
