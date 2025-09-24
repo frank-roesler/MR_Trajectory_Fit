@@ -66,7 +66,3 @@ Tested with:
 - Numpy, Matplotlib, Kornia, ODL, etc.
 
 See `requirements.txt` for the full list.
-
----
-
-**Note:** This project uses external packages and libraries for core MRI operations and NUFFT functionality. Please cite the respective repositories if you use them in your work.
