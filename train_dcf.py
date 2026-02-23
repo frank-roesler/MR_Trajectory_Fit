@@ -10,6 +10,7 @@ import numpy as np
 import os
 
 total_steps = 1000
+batch_size = 64
 compute_dcfs = False
 train_data_folder = "train_data"
 train_data = glob(train_data_folder + "/*")
@@ -37,8 +38,8 @@ for step in range(1, total_steps + 1):
         with torch.no_grad():
             traj_batch = []
             dcf_batch = []
-            for b in range(64):
-                print("Computing DCFs for batch", b + 1, "out of 64")
+            for b in range(batch_size):
+                print(f"Computing DCFs for batch {b + 1} out of {batch_size}")
                 model = FourierCurve(tmin=0, tmax=params["duration"], initial_max=kmax_traj, n_coeffs=params["model_size"], coeff_lvl=1e-1).to(device)
                 traj = model(t)
                 # ------------------------------------------------------
@@ -61,7 +62,7 @@ for step in range(1, total_steps + 1):
             torch.save((traj_batch, dcf_batch), f"{train_data_folder}/{torch.randint(0,int(1e+7),(1,)).item()}.pt")
     else:
         traj_batch, dcf_batch = torch.load(train_data[step])
-    traj_batch = traj_batch.to(device).reshape(64, 2, 100)
+    traj_batch = traj_batch.to(device).reshape(batch_size, 2, 100)
     dcf_batch = dcf_batch.to(device)
     dcf_pred_batch = dcfnet(traj_batch).squeeze()
     loss = torch.mean((dcf_batch - dcf_pred_batch.repeat((1, params["n_petals"]))).abs())
@@ -75,7 +76,7 @@ for step in range(1, total_steps + 1):
     losses.append(loss.detach().cpu().item())
     if step % 10 == 0:
         plt.cla()
-        plt.semilogy(losses)
+        plt.semilogy(losses, linewidth=0.7)
         plt.show(block=False)
         plt.pause(0.001)
         print("Step:", step)
