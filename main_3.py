@@ -1,0 +1,77 @@
+from utils_3 import (
+    LossCollection,
+    ImageRecon,
+    TrainPlotter,
+    Checkpointer,
+    compute_gradients_from_traj,
+    compute_pns_from_gradients,
+    get_phantom,
+    make_rosette,
+    final_plots,
+    get_rotation_matrix,
+
+)
+import matplotlib.pyplot as plt
+from mirtorch.linear import FFTCn
+from models import FourierCurve, Ellipse
+import torch
+from params import *
+
+torch.set_printoptions(threshold=100000)
+
+device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+
+phantom = get_phantom(size=(params["img_size"], params["img_size"]), type="glpu").to(device)
+Fop = FFTCn(phantom.shape, phantom.shape, (0, 1), norm=None)
+fft = Fop * phantom
+fft = fft.reshape(1, 1, params["img_size"], params["img_size"])
+rotation_matrix = get_rotation_matrix(params["n_petals"], device=device).detach()
+t = torch.linspace(0, params["duration"], steps=params["timesteps"]).unsqueeze(1).to(device)  # (timesteps, 1)
+
+model = FourierCurve(tmin=0, tmax=params["duration"], initial_max=kmax_traj, n_coeffs=params["model_size"], coeff_lvl=1e-2) #1e-2
+# model = Ellipse(tmin=0, tmax=params["duration"], initial_max=kmax_traj).to(device)
+optimizer = torch.optim.Adam(model.parameters(), lr=params["lr"])
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=1000, factor=0.5, min_lr=1e-6, threshold=1e-6, cooldown=100)
+
+loss_fcns = LossCollection(params["loss_function"])
+reconstructor = ImageRecon(params, kmax_img, normalization, dcfnet="unet")
+plotter = TrainPlotter(params, fft, reconstructor, phantom, loss_fcns.loss_fn, optimizer)
+checkpointer = Checkpointer(export_path, params, dt)
+
+with torch.no_grad():
+    rosette, _, _ = make_rosette(model(t), rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
+    initial_recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
+
+
+for step in range(500): # or params["train_steps"]
+    traj = model(t)  # (timesteps, 2)
+    rosette, *derivatives = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
+    recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
+
+    gx, gy, gz, _ = compute_gradients_from_traj(traj, dt, params["gamma"])
+    _, _, pns_norm, _ = compute_pns_from_gradients(gx, gy, gz, dt)
+    max_pns = torch.tensor(pns_norm.max(), device=traj.device, dtype=torch.float32)  # Convert numpy to tensor
+
+    pns_loss = loss_fcns.pns_loss(max_pns, params, mode="exp")
+    grad_loss, slew_loss = loss_fcns.grad_slew_loss(*derivatives, params, mode="exp")
+    image_loss = loss_fcns.loss_fn(recon, phantom)
+    total_loss = image_loss + grad_loss + slew_loss + pns_loss
+
+    optimizer.zero_grad()
+    total_loss.backward()
+    optimizer.step()
+    scheduler.step(total_loss.detach().item())
+
+    plotter.print_info(step, image_loss, grad_loss, slew_loss, pns_loss, *derivatives, pns_norm, gx, gy)
+    if total_loss.detach().item() < 0.999 * plotter.best_loss and step > 0:
+        plotter.best_loss = total_loss.detach().item()
+        slew_rate = checkpointer.save_checkpoint(model, *derivatives, rosette)
+        plotter.export_figure(export_path)
+        final_plots(phantom, recon, initial_recon, plotter.total_losses, traj, slew_rate, show=False, export=True, export_path=export_path)
+    plotter.update(step, grad_loss, image_loss, slew_loss, pns_loss, total_loss, recon, traj, rosette)
+
+
+plotter.export_figure(export_path)
+
+recon_mirtorch = reconstructor.reconstruct_img(fft, rosette, method="mirtorch")
+final_plots(phantom, recon_mirtorch, initial_recon, plotter.total_losses, traj, slew_rate, export=True, export_path=export_path + "/mirtorch")

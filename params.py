@@ -8,11 +8,13 @@ params = {
     "lr": 5e-4,
     "grad_loss_weight": 1e-2,
     "slew_loss_weight": 1e-2,
+    "pns_loss_weight": 1e-2,
     "zero_filling": True,
     "timesteps": 101,
     "duration": 0.5,  # ms
     "grad_max": 135,
     "slew_rate": 240,
+    "pns_threshold": 98,
     "gamma": 42.575575,  # Gyromagnetic ratio in MHz/T
     "img_size": 512,  # pixels
     "FoV": 224,  # mm
@@ -24,5 +26,6 @@ params = {
 
 kmax_traj = params["res"] / (2 * params["FoV"])  # 1/m
 kmax_img = params["img_size"] / (2 * params["FoV"])  # 1/m
+#print(f"kmax_traj: {kmax_traj:.4f} 1/m, kmax_img: {kmax_img:.4f} 1/m")
 dt = params["duration"] / (params["timesteps"] - 1)
 normalization = 4 / params["img_size"] ** 2
