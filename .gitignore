@@ -11,3 +11,4 @@ test_results/
 */*/.DS_Store
 train_data/
 *.zip
+.DS_Store

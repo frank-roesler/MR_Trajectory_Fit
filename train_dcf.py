@@ -7,9 +7,12 @@ import matplotlib.pyplot as plt
 from time import time
 from glob import glob
 import numpy as np
+import os
 
+total_steps = 1000
 compute_dcfs = False
-train_data = glob("train_data/*")
+train_data_folder = "train_data"
+train_data = glob(train_data_folder + "/*")
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("mps")
 print("Device:", device)
@@ -26,7 +29,7 @@ optimizer = torch.optim.Adam(dcfnet.parameters(), lr=1e-3)
 
 losses = []
 best_loss = float("inf")
-for step in range(len(train_data)):
+for step in range(1, total_steps + 1):
     if step >= len(train_data):
         compute_dcfs = True
     t0 = time()
@@ -35,23 +38,27 @@ for step in range(len(train_data)):
             traj_batch = []
             dcf_batch = []
             for b in range(64):
+                print("Computing DCFs for batch", b + 1, "out of 64")
                 model = FourierCurve(tmin=0, tmax=params["duration"], initial_max=kmax_traj, n_coeffs=params["model_size"], coeff_lvl=1e-1).to(device)
+                traj = model(t)
+                # ------------------------------------------------------
+                # For training pure Ellipse model:
                 # a = 1 + 0.2 * torch.randn(1)
                 # b = 1 + 0.2 * torch.randn(1)
                 # traj = torch.cat([0.5 * a * kmax_traj * (torch.cos(ft) - 1), 0.5 * b * kmax_traj * torch.sin(ft)], dim=-1)
-                traj = model(t)
                 # plt.plot(traj[:, 0], traj[:, 1], linewidth=0.7, marker=".", markersize=3)
                 # plt.show()
+                # -------------------------------------------------------
                 rosette, _, _ = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
                 rosette_dcf = rosette.squeeze().permute(1, 0) / kmax_img * torch.pi
                 dcf = calc_density_compensation_function(rosette_dcf, (params["img_size"], params["img_size"])).abs().squeeze()
                 traj = torch.cat([traj[:, 0], traj[:, 1]], dim=0)
                 traj_batch.append(traj / kmax_img * torch.pi)
-                # traj_batch.append(rosette[:-2, :])
                 dcf_batch.append(dcf[:-2])
             traj_batch = torch.stack(traj_batch, dim=0)
             dcf_batch = torch.stack(dcf_batch, dim=0)
-            torch.save((traj_batch, dcf_batch), f"train_data/{torch.randint(0,1000000,(1,)).item()}.pt")
+            os.makedirs(train_data_folder, exist_ok=True)
+            torch.save((traj_batch, dcf_batch), f"{train_data_folder}/{torch.randint(0,int(1e+7),(1,)).item()}.pt")
     else:
         traj_batch, dcf_batch = torch.load(train_data[step])
     traj_batch = traj_batch.to(device).reshape(64, 2, 100)
@@ -79,15 +86,11 @@ print("FINAL LOSS", np.mean(losses[-100:]).item())
 
 plt.cla()
 plt.semilogy(losses)
-plt.show()
-
 
 for i in range(dcf_batch.shape[0]):
-    plt.figure()
-    plt.plot(dcf_batch[i, : params["timesteps"]].detach().cpu())
-    plt.plot(dcf_pred_batch[i, :].detach().cpu())
+    fig, ax = plt.subplots(2, 1, figsize=(7, 8))
+    ax[0].plot(traj_batch[i, 0, :].detach().cpu(), traj_batch[i, 1, :].detach().cpu(), linewidth=0.7, marker=".", markersize=3)
+    ax[1].plot(dcf_batch[i, : params["timesteps"]].detach().cpu(), label="DCF (kbnufft)", linewidth=0.7)
+    ax[1].plot(dcf_pred_batch[i, :].detach().cpu(), label="DCF (predicted)", linewidth=0.7)
+    ax[1].legend()
     plt.show()
-
-
-# 1e-3: 0.00876
-# 5e-4:
