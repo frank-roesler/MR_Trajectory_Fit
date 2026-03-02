@@ -32,12 +32,14 @@ class ImageRecon:
         self.timesteps = params["timesteps"]
         self.zero_filling = params["zero_filling"]
         self.n_petals = params["n_petals"]
+        self.device = get_device()
         if dcfnet == "unet":
             self.dcfnet = UNet1D(in_channels=2, out_channels=1, features=[16, 32, 64, 128, 256])
         else:
             self.dcfnet = FCN1D(channels=[2, 128, 256, 512, 256, 128, 1], kernel_size=21)
-        dcfdict = torch.load(f"trained_models/dcfnet_{self.dcfnet.name}.pt")
+        dcfdict = torch.load(f"trained_models/dcfnet_{self.dcfnet.name}.pt", map_location=self.device)
         self.dcfnet.load_state_dict(dcfdict)
+        self.dcfnet = self.dcfnet.to(self.device)
 
     def sample_k_space_values(self, fft, rosette):
         rosette = rosette.reshape(1, 1, rosette.shape[0], 2)
@@ -57,7 +59,7 @@ class ImageRecon:
         return self.reconstruct_img_nudft(rosette, sampled)
 
     def reconstruct_img_mirtorch(self, rosette, sampled):
-        s0 = torch.ones(1, 1, self.img_size, self.img_size) + 0j
+        s0 = torch.ones(1, 1, self.img_size, self.img_size, device=sampled.device) + 0j
         rosette = rosette.squeeze().permute(1, 0) / self.kmax_img * torch.pi
         sampled = sampled.reshape(1, 1, -1)
         dcf = calc_density_compensation_function(rosette, (self.img_size, self.img_size)) + 0j
@@ -70,7 +72,7 @@ class ImageRecon:
         rosette = rosette.squeeze().permute(1, 0) / self.kmax_img * torch.pi
         sampled = sampled.reshape(1, 1, -1)
         dcf = self.dcfnet(rosette[:, : self.timesteps - 1].unsqueeze(0)).squeeze() + 0j
-        dcf = torch.cat([dcf.repeat((1, self.n_petals)), torch.zeros(1, 2)], dim=-1).unsqueeze(0)
+        dcf = torch.cat([dcf.repeat((1, self.n_petals)), torch.zeros(1, 2, device=dcf.device)], dim=-1).unsqueeze(0)
         rosette = rosette.permute(1, 0)
         kbnufft.nufft.set_dims(sampled.shape[-1], (self.img_size, self.img_size), device=rosette.device, Nb=1)
         kbnufft.nufft.precompute(rosette)
@@ -99,14 +101,14 @@ class ImageRecon:
         traj = rosette[..., : self.timesteps]
         n_petals = rosette.shape[-1] // self.timesteps
         N = traj.shape[-1]
-        w = torch.ones(n_petals * N)
+        w = torch.ones(n_petals * N, device=rosette.device)
         for _ in range(num_iters):
-            psf = torch.zeros(N)
+            psf = torch.zeros(N, device=rosette.device)
             for i in range(N):
                 dist_sq = torch.sum((rosette - rosette[:, i : i + 1]) ** 2, axis=0)
                 psf[i] = torch.sum(w / (dist_sq + 1e-6))
             w = w / psf.repeat(n_petals)
-        w = 50 * N * n_petals * torch.cat([w, torch.zeros((2))], dim=0)
+        w = 50 * N * n_petals * torch.cat([w, torch.zeros((2), device=w.device)], dim=0)
         return w
 
 
@@ -166,8 +168,8 @@ class LossCollection:
             grad_loss = self.threshold_loss(d_max_rosette, params["grad_max"] * unit)
             slew_loss = self.threshold_loss(dd_max_rosette, params["slew_rate"] * unit)
         else:
-            grad_loss = torch.zeros(1)
-            slew_loss = torch.zeros(1)
+            grad_loss = torch.zeros(1, device=d_max_rosette.device)
+            slew_loss = torch.zeros(1, device=d_max_rosette.device)
         return params["grad_loss_weight"] * grad_loss.sum(), params["slew_loss_weight"] * slew_loss.sum()
 
     def pns_loss(self, max_pns, params, mode="exp"):
@@ -176,7 +178,7 @@ class LossCollection:
         elif mode == "threshold":
             pns_loss = self.threshold_loss(max_pns, params["pns_threshold"])
         else:
-            pns_loss = torch.zeros(1)
+            pns_loss = torch.zeros(1, device=max_pns.device)
         return params["pns_loss_weight"] * pns_loss.sum()
 
 
@@ -391,6 +393,7 @@ class Checkpointer:
         self.path = path
         self.params = params
         self.dt = dt
+        self.device = get_device()
 
     def export_json(self, rosette):
         shift = self.params["timesteps"] - 1
@@ -404,7 +407,7 @@ class Checkpointer:
 
         grads_normalized = [g / n for g, n in zip(grads, grad_norms)]
 
-        slew_max = torch.zeros(2)
+        slew_max = torch.zeros(2, device=grads[0].device)
         for s in slews:
             slew_max = torch.maximum(slew_max, s.abs().max(dim=0).values)
 
@@ -461,11 +464,20 @@ class Checkpointer:
         return slew
 
     def load_checkpoint(self):
-        checkpoint = torch.load(os.path.join(self.path, "checkpoint.pt"))
+        checkpoint = torch.load(os.path.join(self.path, "checkpoint.pt"), map_location=self.device)
         self.params = checkpoint["params"]
         self.dt = self.params["duration"] / (self.params["timesteps"] - 1)
         return checkpoint
 
+
+def get_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        return torch.device("mps")
+    else:
+        return torch.device("cpu")
+        
 
 def get_phantom(size=(512, 512), type="shepp_logan"):
     """Generate a Shepp-Logan phantom as a PyTorch tensor."""
@@ -536,7 +548,9 @@ def compute_pns_from_gradients(gx, gy, gz, dt, gradPreEmphPts=10, specRes=325):
     dt: time step size in ms
     Returns: pns_x, pns_y, pns_norm, t_pns (timesteps,) numpy arrays of PNS components and norm and time
     """
-    hw = safe_hw_from_asc.safe_hw_from_asc('safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc')
+
+    hw = safe_hw_from_asc.safe_hw_from_asc('safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc') # local path for testing
+
     dt_seconds = dt / 1000  # Convert from ms to seconds
 
     #gx = gx[1::2]
