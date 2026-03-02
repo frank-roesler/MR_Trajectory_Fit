@@ -1,7 +1,7 @@
-import numpy as np
-from scipy.signal import lfilter
+import torch
 import matplotlib.pyplot as plt
 import safe_hw_from_asc
+
 
 def safe_example_hw():
     """
@@ -16,44 +16,17 @@ def safe_example_hw():
         'name': 'MP_GPA_EXAMPLE',
         'checksum': '1234567890',
         'dependency': '',
-        'x': {
-            'tau1': 0.20,       # ms
-            'tau2': 0.03,       # ms
-            'tau3': 3.00,       # ms
-            'a1': 0.40,
-            'a2': 0.10,
-            'a3': 0.50,
-            'stim_limit': 30.0, # T/m/s
-            'stim_thresh': 24.0,# T/m/s
-            'g_scale': 0.35     # 1
-        },
-        'y': {
-            'tau1': 1.50,       # ms
-            'tau2': 2.50,       # ms
-            'tau3': 0.15,       # ms
-            'a1': 0.55,
-            'a2': 0.15,
-            'a3': 0.30,
-            'stim_limit': 15.0, # T/m/s
-            'stim_thresh': 12.0,# T/m/s
-            'g_scale': 0.31     # 1
-        },
-        'z': {
-            'tau1': 2.00,       # ms
-            'tau2': 0.12,       # ms
-            'tau3': 1.00,       # ms
-            'a1': 0.42,
-            'a2': 0.40,
-            'a3': 0.18,
-            'stim_limit': 25.0, # T/m/s
-            'stim_thresh': 20.0,# T/m/s
-            'g_scale': 0.25     # 1
-        }
+        'x': {'tau1': 0.20, 'tau2': 0.03, 'tau3': 3.00, 'a1': 0.40, 'a2': 0.10, 'a3': 0.50,
+              'stim_limit': 30.0, 'stim_thresh': 24.0, 'g_scale': 0.35},
+        'y': {'tau1': 1.50, 'tau2': 2.50, 'tau3': 0.15, 'a1': 0.55, 'a2': 0.15, 'a3': 0.30,
+              'stim_limit': 15.0, 'stim_thresh': 12.0, 'g_scale': 0.31},
+        'z': {'tau1': 2.00, 'tau2': 0.12, 'tau3': 1.00, 'a1': 0.42, 'a2': 0.40, 'a3': 0.18,
+              'stim_limit': 25.0, 'stim_thresh': 20.0, 'g_scale': 0.25}
     }
     return hw
 
+
 def safe_longest_time_const(hw):
-    """Get the longest time constant to estimate zero padding size."""
     taus = []
     for axis in ['x', 'y', 'z']:
         if axis in hw:
@@ -61,115 +34,107 @@ def safe_longest_time_const(hw):
     return max(taus)
 
 def safe_hw_check(hw):
-    """Make sure that all is well with the hardware configuration."""
-    # Check if weights sum to 1
     for axis in ['x', 'y', 'z']:
         total_a = hw[axis]['a1'] + hw[axis]['a2'] + hw[axis]['a3']
         if abs(total_a - 1.0) > 0.001:
             raise ValueError(f'Hardware specification {axis}: a1+a2+a3 must be equal to 1!')
-
     required_params = ['stim_limit', 'stim_thresh', 'tau1', 'tau2', 'tau3', 'a1', 'a2', 'a3', 'g_scale']
-    
     for axis in ['x', 'y', 'z']:
         for param in required_params:
             if param not in hw[axis] or hw[axis][param] is None:
                 raise ValueError(f"Hardware specification {axis}.{param} is empty or missing!")
 
-def safe_tau_lowpass(dgdt, tau, dt):
-    """
-    Apply a RC lowpass filter with time constant tau = RC.
-    NOTE: tau and dt need to be in the same unit (i.e. s or ms)
-    """
-    # Filter coefficient alpha = dt / (tau + dt)
-    alpha = dt / (tau + dt)
-    
-    # Python's lfilter implements: a[0]*y[n] = b[0]*x[n] + b[1]*x[n-1] ... - a[1]*y[n-1] ...
-    # The MATLAB loop was: y[n] = alpha*x[n] + (1-alpha)*y[n-1]
-    # This corresponds to: y[n] - (1-alpha)*y[n-1] = alpha*x[n]
-    # So a = [1, -(1-alpha)], b = [alpha]
-    
-    b = [alpha]
-    a = [1, -(1 - alpha)]
-    
-    # Apply filter along the first axis (time)
-    return lfilter(b, a, dgdt, axis=0)
 
-def safe_pns_model(dgdt, dt, hw_axis):
+def safe_tau_lowpass_torch(dgdt: torch.Tensor, tau: float, dt: float) -> torch.Tensor:
     """
-    Calculate PNS stimulation for a specific axis.
-    dgdt is in T/m/s, dt is in s.
+    Differentiable RC lowpass filter (like MATLAB loop).
+    dgdt: (time,)
+    tau: time constant in ms
+    dt: sampling interval in ms
     """
-    # Convert dt to ms for the lowpass filter since tau is in ms
-    dt_ms = dt * 1000.0
+
+    print("Applying lowpass filter...", flush=True)
+    alpha = dt / (tau + dt)
+    fw = torch.zeros_like(dgdt)
+    fw[0] = alpha * dgdt[0]
+    for t in range(1, dgdt.shape[0]):
+        fw[t] = alpha * dgdt[t] + (1 - alpha) * fw[t - 1]
+    return fw
+
+
+def safe_tau_lowpass_torch_vec(dgdt: torch.Tensor, tau: float, dt: float) -> torch.Tensor:
+    """
+    Vectorized differentiable RC lowpass filter using PyTorch.
+    dgdt: (time,)
+    tau: time constant in ms
+    dt: sampling interval in ms
+    """
+    alpha = dt / (tau + dt)
+    time_len = dgdt.shape[0]
+
+    # Compute filter weights (exponentially decaying)
+    # Recursive formula: y[n] = alpha * x[n] + (1-alpha) * y[n-1]
+    # Closed form: y[n] = sum_{k=0}^{n} alpha*(1-alpha)^k * x[n-k]
+    # Equivalent: convolve x with kernel (alpha*(1-alpha)^k)
     
-    # Term 1: a1 * abs(LowPass(dgdt))
-    lp1 = safe_tau_lowpass(dgdt, hw_axis['tau1'], dt_ms)
-    stim1 = hw_axis['a1'] * np.abs(lp1)
+    # Create the kernel (length = time_len)
+    kernel = alpha * (1 - alpha) ** torch.arange(time_len, device=dgdt.device, dtype=dgdt.dtype)
     
-    # Term 2: a2 * LowPass(abs(dgdt))
-    lp2 = safe_tau_lowpass(np.abs(dgdt), hw_axis['tau2'], dt_ms)
+    # Convolve with dgdt using cumulative sum trick for efficiency
+    # Flip kernel for causal convolution
+    y = torch.nn.functional.conv1d(
+        dgdt.view(1,1,-1),
+        kernel.view(1,1,-1),
+        padding=0
+    ).view(-1)
+    
+    return y
+
+
+def safe_pns_model_torch(dgdt: torch.Tensor, dt: float, hw_axis: dict) -> torch.Tensor:
+    dt_ms = dt * 1000.0  # convert to ms
+    lp1 = safe_tau_lowpass_torch(dgdt, hw_axis['tau1'], dt_ms)
+    stim1 = hw_axis['a1'] * torch.abs(lp1)
+    lp2 = safe_tau_lowpass_torch(torch.abs(dgdt), hw_axis['tau2'], dt_ms)
     stim2 = hw_axis['a2'] * lp2
-    
-    # Term 3: a3 * abs(LowPass(dgdt))
-    lp3 = safe_tau_lowpass(dgdt, hw_axis['tau3'], dt_ms)
-    stim3 = hw_axis['a3'] * np.abs(lp3)
-    
-    # Combine
+    lp3 = safe_tau_lowpass_torch(dgdt, hw_axis['tau3'], dt_ms)
+    stim3 = hw_axis['a3'] * torch.abs(lp3)
     stim = (stim1 + stim2 + stim3) / hw_axis['stim_thresh'] * hw_axis['g_scale'] * 100.0
     return stim
 
-def safe_gwf_to_pns(gwf, rf, dt, hw, do_padding=True):
-    """
-    Main function to convert Gradient Waveform to PNS.
-    
-    gwf: (nx3) array in T/m
-    rf:  (nx1) array (or similar)
-    dt:  float, sampling time in s
-    hw:  hardware dictionary
-    """
-    gwf = np.array(gwf)
-    rf = np.array(rf)
-    
-    # 1. Zero Padding
-    if do_padding:
-        zpt = safe_longest_time_const(hw) * 4 / 1000.0 # convert ms to s
-        pad_len_pre = int(np.round(zpt / 4 / dt))
-        pad_len_post = int(np.round(zpt / 1 / dt))
-        
-        # Create zero arrays
-        zp1 = np.zeros((pad_len_pre, 3))
-        zp2 = np.zeros((pad_len_post, 3))
-        
-        # Pad GWF
-        gwf = np.concatenate([zp1, gwf, zp2], axis=0)
-        
-        # Pad RF (Handle 1D or 2D RF arrays)
-        if rf.ndim == 1:
-            rf_zp1 = np.zeros(pad_len_pre)
-            rf_zp2 = np.zeros(pad_len_post)
-            rf = np.concatenate([rf_zp1, rf, rf_zp2])
-        else:
-            rf_zp1 = np.zeros((pad_len_pre, rf.shape[1]))
-            rf_zp2 = np.zeros((pad_len_post, rf.shape[1]))
-            rf = np.concatenate([rf_zp1, rf, rf_zp2], axis=0)
 
-    # 2. Hardware Check
+def safe_gwf_to_pns_torch(gwf: torch.Tensor, rf: torch.Tensor, dt: float, hw: dict, do_padding=True):
+    gwf = gwf.to(torch.float32)
+    rf = rf.to(torch.float32)
+
+    # Zero Padding
+    if do_padding:
+        zpt = safe_longest_time_const(hw) * 4 / 1000.0
+        pad_len_pre = int(round(zpt / 4 / dt))
+        pad_len_post = int(round(zpt / 1 / dt))
+        gwf = torch.cat([torch.zeros((pad_len_pre, 3), device=gwf.device),
+                         gwf,
+                         torch.zeros((pad_len_post, 3), device=gwf.device)], dim=0)
+        if rf.ndim == 1:
+            rf = torch.cat([torch.zeros(pad_len_pre, device=rf.device),
+                            rf,
+                            torch.zeros(pad_len_post, device=rf.device)], dim=0)
+        else:
+            rf = torch.cat([torch.zeros((pad_len_pre, rf.shape[1]), device=rf.device),
+                            rf,
+                            torch.zeros((pad_len_post, rf.shape[1]), device=rf.device)], dim=0)
+
+    # Hardware check
     safe_hw_check(hw)
-    
-    # 3. Calculate Slew Rate (dgdt)
-    # MATLAB diff(gwf, 1) calculates difference along dim 1.
-    # Note: This reduces the array length by 1.
-    dgdt = np.diff(gwf, axis=0) / dt
-    
-    # 4. Calculate PNS for each axis
-    pns = np.zeros_like(dgdt)
-    axes_keys = ['x', 'y', 'z']
-    
-    for i, ax_name in enumerate(axes_keys):
-        # Pass the specific column for the axis
-        pns[:, i] = safe_pns_model(dgdt[:, i], dt, hw[ax_name])
-        
-    # 5. Pack results
+
+    # Slew rate
+    dgdt = (gwf[1:] - gwf[:-1]) / dt
+
+    # PNS calculation
+    pns = torch.zeros_like(dgdt)
+    for i, ax in enumerate(['x','y','z']):
+        pns[:, i] = safe_pns_model_torch(dgdt[:, i], dt, hw[ax])
+
     res = {
         'pns': pns,
         'gwf': gwf,
@@ -178,20 +143,22 @@ def safe_gwf_to_pns(gwf, rf, dt, hw, do_padding=True):
         'dt': dt,
         'hw': hw
     }
-    
     return pns, res
 
-# --- Example Usage ---
-if __name__ == "__main__":
-    # 1. Load Hardware
-    hw = safe_hw_from_asc.safe_hw_from_asc('safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc')
-    # or use example hardware: hw = safe_example_hw()
-    
-    # 2. Load Data provided by user
-    dt = 1e-3  # seconds (1 ms)
 
-    # Raw normalized data matrix
-    raw_data = np.array([
+# Example usage
+if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # 1. Load Hardware
+    try:
+        hw = safe_hw_from_asc.safe_hw_from_asc('safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc')
+    except:
+        hw = safe_example_hw()
+
+    # 2. Data
+    dt = 1e-3
+    raw_data = torch.tensor([
         [ 0,         0,         0],
         [-0.2005,    0.9334,    0.3029],
         [-0.2050,    0.9324,    0.3031],
@@ -268,70 +235,48 @@ if __name__ == "__main__":
         [-0.2058,    0.9794,   -0.0426],
         [-0.2039,    0.9798,   -0.0420],
         [ 0,         0,         0]
-    ])
+    ], device=device)
 
-    # Apply scaling factor
     gwf_input = 0.08 * raw_data
-
-    # Create RF
-    # MATLAB: rf = ones(length(gwf),1); rf(41:end) = -1;
-    # Python indices start at 0. MATLAB index 41 is Python index 40.
-    rf_input = np.ones(len(gwf_input))
+    rf_input = torch.ones(len(gwf_input), device=device)
     rf_input[40:] = -1
 
-    # 3. Run Calculation
-    try:
-        pns, res = safe_gwf_to_pns(gwf_input, rf_input, dt, hw, do_padding=True)
-        print("PNS Calculated successfully.")
-        
-        # --- Plotting ---
-        gwf_plot = res['gwf']
-        pns_plot = res['pns']
-        rf_plot  = res['rf']
-        
-        # Create time vectors
-        # Note: gwf has padding added inside the function, so we must use res['gwf'] length
-        t_gwf = np.arange(len(gwf_plot)) * dt * 1000 # ms
-        t_pns = np.arange(len(pns_plot)) * dt * 1000 # ms
+    # 3. Run
+    pns, res = safe_gwf_to_pns_torch(gwf_input, rf_input, dt, hw)
 
-        # Align lengths (PNS is shorter by 1 due to diff)
-        gwf_plot = gwf_plot[:-1, :]
-        rf_plot = rf_plot[:-1]
-        t_gwf = t_gwf[:-1]
+    gwf_plot = res['gwf']
+    pns_plot = res['pns']
+    rf_plot  = res['rf']
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(10, 10))
-        
-        # Plot 1: Gradients
-        ax1.plot(t_gwf, gwf_plot[:, 0] * 1000, label='Gx', color='r')
-        ax1.plot(t_gwf, gwf_plot[:, 1] * 1000, label='Gy', color='g')
-        ax1.plot(t_gwf, gwf_plot[:, 2] * 1000, label='Gz', color='b')
-        ax1.set_ylabel('Gradient [mT/m]')
-        ax1.set_title('Gradient Waveforms')
-        ax1.grid(True, linestyle='--', alpha=0.6)
-        ax1.legend(loc='upper right')
-        
-        # Optional: Plot RF on twin axis to see the flip
-        ax1_rf = ax1.twinx()
-        ax1_rf.plot(t_gwf, rf_plot, color='k', linestyle=':', alpha=0.3, label='RF')
-        ax1_rf.set_ylabel('RF State')
-        
-        # Plot 2: PNS
-        ax2.plot(t_pns, pns_plot[:, 0], label='PNS x', color='r', linestyle='--')
-        ax2.plot(t_pns, pns_plot[:, 1], label='PNS y', color='g', linestyle='--')
-        ax2.plot(t_pns, pns_plot[:, 2], label='PNS z', color='b', linestyle='--')
-        
-        # Norm
-        pns_norm = np.linalg.norm(pns_plot, axis=1)
-        #ax2.plot(t_pns, pns_norm, label='|PNS|', color='k', linewidth=1.5)
-        
-        ax2.set_ylabel('Stimulation [%]')
-        ax2.set_xlabel('Time [ms]')
-        ax2.set_title('Peripheral Nerve Stimulation (PNS)')
-        ax2.grid(True, linestyle='--', alpha=0.6)
-        ax2.legend(loc='upper right')
-        
-        plt.tight_layout()
-        plt.show()
+    t_gwf = torch.arange(len(gwf_plot), device=device) * dt * 1000
+    t_pns = torch.arange(len(pns_plot), device=device) * dt * 1000
 
-    except Exception as e:
-        print(f"An error occurred: {e}")
+    gwf_plot = gwf_plot[:-1, :]
+    rf_plot = rf_plot[:-1]
+    t_gwf = t_gwf[:-1]
+
+    fig, (ax1, ax2) = plt.subplots(2,1,sharex=True, figsize=(10,10))
+
+    ax1.plot(t_gwf.cpu(), gwf_plot[:,0].cpu()*1000, label='Gx', color='r')
+    ax1.plot(t_gwf.cpu(), gwf_plot[:,1].cpu()*1000, label='Gy', color='g')
+    ax1.plot(t_gwf.cpu(), gwf_plot[:,2].cpu()*1000, label='Gz', color='b')
+    ax1.set_ylabel('Gradient [mT/m]')
+    ax1.set_title('Gradient Waveforms')
+    ax1.grid(True, linestyle='--', alpha=0.6)
+    ax1.legend(loc='upper right')
+    ax1_rf = ax1.twinx()
+    ax1_rf.plot(t_gwf.cpu(), rf_plot.cpu(), color='k', linestyle=':', alpha=0.3, label='RF')
+    ax1_rf.set_ylabel('RF State')
+
+    ax2.plot(t_pns.cpu(), pns_plot[:,0].cpu(), label='PNS x', color='r', linestyle='--')
+    ax2.plot(t_pns.cpu(), pns_plot[:,1].cpu(), label='PNS y', color='g', linestyle='--')
+    ax2.plot(t_pns.cpu(), pns_plot[:,2].cpu(), label='PNS z', color='b', linestyle='--')
+    ax2.set_ylabel('Stimulation [%]')
+    ax2.set_xlabel('Time [ms]')
+    ax2.set_title('Peripheral Nerve Stimulation (PNS)')
+    ax2.grid(True, linestyle='--', alpha=0.6)
+    ax2.legend(loc='upper right')
+
+    plt.tight_layout()
+    plt.savefig("pns_example_plot.png")
+    plt.show()

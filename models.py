@@ -16,10 +16,10 @@ class FourierPulseOpt(nn.Module):
         p = p * weights.unsqueeze(1)
         self.params = torch.nn.Parameter(p)
         k = torch.arange(-n_coeffs, n_coeffs + 1).unsqueeze(0)
-        self.freqs = 2 * torch.pi * k / (t_max - t_min)
+        self.register_buffer('freqs', 2 * torch.pi * k / (t_max - t_min))
 
     def to(self, device):
-        self.freqs = self.freqs.to(device)
+        # freqs is now a buffer and will be moved automatically
         return super().to(device)
 
     def forward(self, x):
@@ -60,7 +60,9 @@ class Ellipse(nn.Module):
         self.scaling = initial_max * 0.5
         self.axes = torch.nn.Parameter(self.scaling * torch.ones(2))
         self.name = "Ellipse"
-        self.k = 2 * torch.pi / (tmax - tmin)
+        self.tmin = tmin
+        self.tmax = tmax
+        self.register_buffer('k', torch.tensor(2 * torch.pi / (tmax - tmin)))
 
     def to(self, device):
         return super().to(device)

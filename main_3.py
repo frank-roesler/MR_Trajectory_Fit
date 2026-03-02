@@ -22,14 +22,12 @@ torch.set_printoptions(threshold=100000)
 
 device = get_device()
 
-print("Using device:", device)
-
 phantom = get_phantom(size=(params["img_size"], params["img_size"]), type="glpu").to(device)
 Fop = FFTCn(phantom.shape, phantom.shape, (0, 1), norm=None)
 fft = Fop * phantom
 fft = fft.reshape(1, 1, params["img_size"], params["img_size"])
 rotation_matrix = get_rotation_matrix(params["n_petals"], device=device).detach()
-t = torch.linspace(0, params["duration"], steps=params["timesteps"]).unsqueeze(1).to(device)  # (timesteps, 1)
+t = torch.linspace(0, params["duration"], steps=params["timesteps"], device=device).unsqueeze(1)  # (timesteps, 1)
 
 model = FourierCurve(tmin=0, tmax=params["duration"], initial_max=kmax_traj, n_coeffs=params["model_size"], coeff_lvl=1e-2).to(device) #1e-2
 # model = Ellipse(tmin=0, tmax=params["duration"], initial_max=kmax_traj).to(device)
@@ -45,15 +43,17 @@ with torch.no_grad():
     rosette, _, _ = make_rosette(model(t), rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     initial_recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
 
-
 for step in range(500): # or params["train_steps"]
+    if step % 10 == 0:
+        print(f"Step {step}...", flush=True)
     traj = model(t)  # (timesteps, 2)
     rosette, *derivatives = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
 
+    # Compute PNS from gradients - now fully differentiable!
     gx, gy, gz, _ = compute_gradients_from_traj(traj, dt, params["gamma"])
     _, _, pns_norm, _ = compute_pns_from_gradients(gx, gy, gz, dt)
-    max_pns = torch.tensor(pns_norm.max(), device=traj.device, dtype=torch.float32)  # Convert numpy to tensor
+    max_pns = pns_norm.max()  # Now a differentiable torch tensor
 
     pns_loss = loss_fcns.pns_loss(max_pns, params, mode="exp")
     grad_loss, slew_loss = loss_fcns.grad_slew_loss(*derivatives, params, mode="exp")
@@ -65,7 +65,7 @@ for step in range(500): # or params["train_steps"]
     optimizer.step()
     scheduler.step(total_loss.detach().item())
 
-    plotter.print_info(step, image_loss, grad_loss, slew_loss, pns_loss, *derivatives, pns_norm, gx, gy)
+    plotter.print_info(step, image_loss, grad_loss, slew_loss, pns_loss, *derivatives, max_pns, gx, gy)
     if total_loss.detach().item() < 0.999 * plotter.best_loss and step > 0:
         plotter.best_loss = total_loss.detach().item()
         slew_rate = checkpointer.save_checkpoint(model, *derivatives, rosette)

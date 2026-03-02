@@ -26,20 +26,20 @@ class ImageRecon:
         'kbnufft': uses dcfnet for fast differentiable dcf computation,
         'mirtorch': uses calc_density_compensation_function from torchkbnufft. Not differentiable.
         'nudft': very slow and should only be used for debugging."""
+        self.device = get_device()
         self.kmax_img = kmax_img
         self.img_size = params["img_size"]
         self.normalization = normalization
         self.timesteps = params["timesteps"]
         self.zero_filling = params["zero_filling"]
         self.n_petals = params["n_petals"]
-        self.device = get_device()
         if dcfnet == "unet":
             self.dcfnet = UNet1D(in_channels=2, out_channels=1, features=[16, 32, 64, 128, 256])
         else:
             self.dcfnet = FCN1D(channels=[2, 128, 256, 512, 256, 128, 1], kernel_size=21)
         dcfdict = torch.load(f"trained_models/dcfnet_{self.dcfnet.name}.pt", map_location=self.device)
         self.dcfnet.load_state_dict(dcfdict)
-        self.dcfnet = self.dcfnet.to(self.device)
+        self.dcfnet.to(self.device)
 
     def sample_k_space_values(self, fft, rosette):
         rosette = rosette.reshape(1, 1, rosette.shape[0], 2)
@@ -108,7 +108,7 @@ class ImageRecon:
                 dist_sq = torch.sum((rosette - rosette[:, i : i + 1]) ** 2, axis=0)
                 psf[i] = torch.sum(w / (dist_sq + 1e-6))
             w = w / psf.repeat(n_petals)
-        w = 50 * N * n_petals * torch.cat([w, torch.zeros((2), device=w.device)], dim=0)
+        w = 50 * N * n_petals * torch.cat([w, torch.zeros(2, device=rosette.device)], dim=0)
         return w
 
 
@@ -337,9 +337,9 @@ class TrainPlotter:
             # --- Update Gradients (New) ---
             gx, gy, gz, t_axis = compute_gradients_from_traj(traj, self.dt, self.gamma)
 
-            # 4. Plot
-            self.gx_line.set_data(t_axis, gx)
-            self.gy_line.set_data(t_axis, gy)
+            # 4. Plot (convert to numpy for plotting)
+            self.gx_line.set_data(t_axis.detach().cpu().numpy(), gx.detach().cpu().numpy())
+            self.gy_line.set_data(t_axis.detach().cpu().numpy(), gy.detach().cpu().numpy())
             self.ax_grad.relim()
             self.ax_grad.autoscale_view()
 
@@ -348,15 +348,15 @@ class TrainPlotter:
             # --- Update PNS (New) ---
             pns_x, pns_y, pns_norm, t_pns = compute_pns_from_gradients(gx, gy, gz, self.dt)
 
-            # 3. Plot PNS components and norm
-            self.pns_x_line.set_data(t_pns, pns_x)
-            self.pns_y_line.set_data(t_pns, pns_y)
-            self.pns_norm_line.set_data(t_pns, pns_norm)
+            # 3. Plot PNS components and norm (convert to numpy for plotting)
+            self.pns_x_line.set_data(t_pns.detach().cpu().numpy(), pns_x.detach().cpu().numpy())
+            self.pns_y_line.set_data(t_pns.detach().cpu().numpy(), pns_y.detach().cpu().numpy())
+            self.pns_norm_line.set_data(t_pns.detach().cpu().numpy(), pns_norm.detach().cpu().numpy())
             self.ax_pns.relim()
             self.ax_pns.autoscale_view()
             
             # 4. Track and plot maximum PNS norm over steps
-            max_pns = np.max(pns_norm)
+            max_pns = pns_norm.max().item()
             self.max_pns_norms.append(max_pns)
             self.pns_norm_max_line.set_data(range(0, 10 * len(self.max_pns_norms), 10), self.max_pns_norms)
             self.ax_pns_norm.relim()
@@ -364,7 +364,7 @@ class TrainPlotter:
             
             plt.pause(0.01)
 
-    def print_info(self, step, image_loss, grad_loss, slew_loss, pns_loss, d_max, dd_max, pns_norm, g_x, g_y):
+    def print_info(self, step, image_loss, grad_loss, slew_loss, pns_loss, d_max, dd_max, pns_max, g_x, g_y):
         if step % 10 == 0:
             print(f"Step {step+1}/{self.train_steps}")
             for i, param_group in enumerate(self.optimizer.param_groups):
@@ -378,9 +378,11 @@ class TrainPlotter:
             print("-" * 100)
             print(f"Gradient:{1000 / self.gamma * d_max.max().item():.2f}")
             print(f"Slew Rate:{1000 / self.gamma * dd_max.max().item():.2f}")
-            print(f"Max PNS Norm: {pns_norm.max():.2f}%")
-            print(f"Max Gx: {g_x.max():.2f} mT/m")
-            print(f"Max Gy: {g_y.max():.2f} mT/m")
+            # Handle both tensor and scalar inputs for pns_max
+            pns_val = pns_max.item() if torch.is_tensor(pns_max) else pns_max
+            print(f"Max PNS Norm: {pns_val:.2f}%")
+            print(f"Max Gx: {g_x.abs().max().item():.2f} mT/m")
+            print(f"Max Gy: {g_y.abs().max().item():.2f} mT/m")
 
             print("=" * 100)
 
@@ -390,10 +392,10 @@ class TrainPlotter:
 
 class Checkpointer:
     def __init__(self, path, params, dt):
+        self.device = get_device()
         self.path = path
         self.params = params
         self.dt = dt
-        self.device = get_device()
 
     def export_json(self, rosette):
         shift = self.params["timesteps"] - 1
@@ -471,6 +473,7 @@ class Checkpointer:
 
 
 def get_device():
+    import torch
     if torch.cuda.is_available():
         return torch.device("cuda")
     elif torch.backends.mps.is_available():
@@ -496,13 +499,14 @@ def get_phantom(size=(512, 512), type="shepp_logan"):
 
 def get_rotation_matrix(n_petals, device=torch.device("cpu")):
     angle_radians = 2 * torch.pi / n_petals
-    angle_radians = torch.Tensor([angle_radians])
+    angle_radians = torch.tensor([angle_radians], device=device)
     rotation_matrix = torch.tensor(
         [
             [torch.cos(angle_radians), -torch.sin(angle_radians)],
             [torch.sin(angle_radians), torch.cos(angle_radians)],
-        ]
-    ).to(device)
+        ],
+        device=device
+    )
     return rotation_matrix
 
 
@@ -530,56 +534,53 @@ def compute_gradients_from_traj(traj, dt, gamma):
     traj: (timesteps, 2) tensor
     dt: time step size (scalar)
     gamma: gyromagnetic ratio (scalar)
-    Returns: gx, gy, gz, t_axis (timesteps,) numpy arrays in physical units (e.g. mT/m)
-
+    Returns: gx, gy, gz, t_axis (timesteps,) torch tensors in physical units (e.g. mT/m)
     """
     d_traj, _ = compute_derivatives(traj, dt)
     grad_waveform = d_traj * (1000 / gamma)  # Convert to mT/m
-    gx = grad_waveform[:, 0].detach().cpu().numpy()
-    gy = grad_waveform[:, 1].detach().cpu().numpy()
-    gz = np.zeros_like(gx)  # Assuming 2D trajectory, gz is zero
-    t_axis = np.arange(len(gx)) * dt  # Time in ms
+    gx = grad_waveform[:, 0]
+    gy = grad_waveform[:, 1]
+    gz = torch.zeros_like(gx)  # Assuming 2D trajectory, gz is zero
+    t_axis = torch.arange(len(gx), device=traj.device, dtype=traj.dtype) * dt  # Time in ms
     return gx, gy, gz, t_axis
 
 
 def compute_pns_from_gradients(gx, gy, gz, dt, gradPreEmphPts=10, specRes=325):
-    """Compute PNS from gradient waveforms using the safe_gwf_to_pns function.
-    gx, gy, gz: (timesteps,) numpy arrays of gradient waveforms in mT/m
+    """Compute PNS from gradient waveforms using the differentiable safe_gwf_to_pns_torch.
+    gx, gy, gz: (timesteps,) torch tensors of gradient waveforms in mT/m
     dt: time step size in ms
-    Returns: pns_x, pns_y, pns_norm, t_pns (timesteps,) numpy arrays of PNS components and norm and time
+    Returns: pns_x, pns_y, pns_norm, t_pns (timesteps,) torch tensors of PNS components and norm and time
     """
-
-    hw = safe_hw_from_asc.safe_hw_from_asc('safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc') # local path for testing
-
+    device = gx.device
+    dtype = gx.dtype
+    
+    hw = safe_hw_from_asc.safe_hw_from_asc('safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc')
     dt_seconds = dt / 1000  # Convert from ms to seconds
 
-    #gx = gx[1::2]
-    #gy = gy[1::2]
-    #dt_seconds = 10*1e-6
-
-    # Compose gradient vector [T/m] with ramp up/down and spectral repetition
+    # Compose gradient vector [T/m] with ramp up/down and spectral repetition (all differentiable)
     # Ramp up
-    ramp_up_x = np.max(gx[0]) * np.linspace(0, 1, gradPreEmphPts)
-    ramp_dn_x = np.max(gx[-1]) * np.linspace(1, 0, gradPreEmphPts)
-    full_ro_x = np.tile(gx, specRes)  # Repeat for spectral resolution
-    gVecX = np.concatenate((ramp_up_x, full_ro_x, ramp_dn_x)) * 1e-3  # Convert mT/m to T/m
+    ramp_up_x = gx[0] * torch.linspace(0, 1, gradPreEmphPts, device=device, dtype=dtype)
+    ramp_dn_x = gx[-1] * torch.linspace(1, 0, gradPreEmphPts, device=device, dtype=dtype)
+    full_ro_x = gx.repeat(specRes)  # Repeat for spectral resolution
+    gVecX = torch.cat([ramp_up_x, full_ro_x, ramp_dn_x]) * 1e-3  # Convert mT/m to T/m
 
-    ramp_up_y = np.max(gy[0]) * np.linspace(0, 1, gradPreEmphPts)
-    ramp_dn_y = np.max(gy[-1]) * np.linspace(1, 0, gradPreEmphPts)
-    full_ro_y = np.tile(gy, specRes)
-    gVecY = np.concatenate((ramp_up_y, full_ro_y, ramp_dn_y)) * 1e-3
+    ramp_up_y = gy[0] * torch.linspace(0, 1, gradPreEmphPts, device=device, dtype=dtype)
+    ramp_dn_y = gy[-1] * torch.linspace(1, 0, gradPreEmphPts, device=device, dtype=dtype)
+    full_ro_y = gy.repeat(specRes)
+    gVecY = torch.cat([ramp_up_y, full_ro_y, ramp_dn_y]) * 1e-3
     
-    gVecZ = np.zeros_like(gVecX)
-    gVec = np.column_stack((gVecX, gVecY, gVecZ))
+    gVecZ = torch.zeros_like(gVecX)
+    gVec = torch.stack([gVecX, gVecY, gVecZ], dim=1)  # (time, 3)
 
-    rfVec = np.ones(len(gVec))
+    rfVec = torch.ones(len(gVec), device=device, dtype=dtype)
 
-    pns, res = safe_gwf_to_pns.safe_gwf_to_pns(gVec, rfVec, dt_seconds, hw, do_padding=True)
+    # Use differentiable torch version
+    pns, res = safe_gwf_to_pns.safe_gwf_to_pns_torch(gVec, rfVec, dt_seconds, hw, do_padding=True)
     
     pns_x = res['pns'][:, 0]
     pns_y = res['pns'][:, 1]
-    pns_norm = np.linalg.norm(res['pns'], axis=1)
-    t_pns = np.arange(len(res['pns'])) * dt_seconds * 1000  # Time in ms
+    pns_norm = torch.norm(res['pns'], dim=1)
+    t_pns = torch.arange(len(res['pns']), device=device, dtype=dtype) * dt_seconds * 1000  # Time in ms
     
     return pns_x, pns_y, pns_norm, t_pns
 
@@ -600,7 +601,7 @@ def plot_pixel_rosette(rosette, fft, img_size, ax=None):
     """Sample FFT at trajectory locations"""
     sampled_coord_x = torch.round((rosette[0, 0, :, 0] + 1) * (img_size - 1) / 2)
     sampled_coord_y = torch.round((rosette[0, 0, :, 1] + 1) * (img_size - 1) / 2)
-    pixel_curve = torch.zeros(img_size, img_size)
+    pixel_curve = torch.zeros(img_size, img_size, device=rosette.device)
     pixel_curve[sampled_coord_y.long(), sampled_coord_x.long()] = 1.0
     sampled_from_pixels = fft[0, 0, sampled_coord_y.long(), sampled_coord_x.long()]
     sampled_from_pixels[-2:] *= 0
