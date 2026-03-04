@@ -17,7 +17,7 @@ import json
 from os.path import join, dirname
 
 import safe_gwf_to_pns
-import safe_hw_from_asc
+# import safe_hw_from_asc
 
 
 class ImageRecon:
@@ -302,7 +302,9 @@ class TrainPlotter:
         self.max_pns_norms = []
         self.pns_losses = []
 
-    def update(self, step, grad_loss, img_loss, slew_loss, pns_loss, total_loss, recon, traj, rosette):
+    def update(self, step, grad_loss, img_loss, slew_loss, pns_loss, total_loss, recon, traj, rosette, gx, gy, t_axis, pns_x, pns_y, pns_norm, t_pns):
+        
+        # Update for loss plot (final_figure.png and train_figure.png), evaluation, checkpoint..
         self.grad_losses.append(grad_loss.detach().item())
         self.img_losses.append(img_loss.detach().item())
         self.slew_losses.append(slew_loss.detach().item())
@@ -310,7 +312,7 @@ class TrainPlotter:
         self.total_losses.append(total_loss.detach().item())
         
         if step % 10 == 0:
-            # --- Update Recon and Losses ---
+            # --- Update Recon and Losses (for the image) ---
             recon_mirtorch = self.reconstructor.reconstruct_img(self.fft, rosette, method="mirtorch")
             image_loss_mirtorch = self.loss_fn(recon_mirtorch, self.phantom)
             self.img_losses_mirtorch.append(image_loss_mirtorch.detach().item())
@@ -334,8 +336,10 @@ class TrainPlotter:
             self.ax_traj.relim()
             self.ax_traj.autoscale_view()
             
+            """
             # --- Update Gradients (New) ---
-            gx, gy, gz, t_axis = compute_gradients_from_traj(traj, self.dt, self.gamma)
+            gx, gy, t_axis = compute_gradients_from_traj(traj, self.dt, self.gamma)
+            """
 
             # 4. Plot (convert to numpy for plotting)
             self.gx_line.set_data(t_axis.detach().cpu().numpy(), gx.detach().cpu().numpy())
@@ -344,9 +348,11 @@ class TrainPlotter:
             self.ax_grad.autoscale_view()
 
             self.ax_img.set_title(f"Recon (abs) Step {step+1}")
-
+            
+            """
             # --- Update PNS (New) ---
-            pns_x, pns_y, pns_norm, t_pns = compute_pns_from_gradients(gx, gy, gz, self.dt)
+            pns_x, pns_y, pns_norm, t_pns = compute_pns_from_gradients(gx, gy, self.dt)
+            """
 
             # 3. Plot PNS components and norm (convert to numpy for plotting)
             self.pns_x_line.set_data(t_pns.detach().cpu().numpy(), pns_x.detach().cpu().numpy())
@@ -534,27 +540,27 @@ def compute_gradients_from_traj(traj, dt, gamma):
     traj: (timesteps, 2) tensor
     dt: time step size (scalar)
     gamma: gyromagnetic ratio (scalar)
-    Returns: gx, gy, gz, t_axis (timesteps,) torch tensors in physical units (e.g. mT/m)
+    Returns: gx, gy, t_axis (timesteps,) torch tensors in physical units (e.g. mT/m)
     """
     d_traj, _ = compute_derivatives(traj, dt)
     grad_waveform = d_traj * (1000 / gamma)  # Convert to mT/m
     gx = grad_waveform[:, 0]
     gy = grad_waveform[:, 1]
-    gz = torch.zeros_like(gx)  # Assuming 2D trajectory, gz is zero
+    # gz = torch.zeros_like(gx)  # Assuming 2D trajectory, gz is zero
     t_axis = torch.arange(len(gx), device=traj.device, dtype=traj.dtype) * dt  # Time in ms
-    return gx, gy, gz, t_axis
+    return gx, gy, t_axis
 
 
-def compute_pns_from_gradients(gx, gy, gz, dt, gradPreEmphPts=10, specRes=325):
+def compute_pns_from_gradients(hw, gx, gy, dt, gradPreEmphPts=10, specRes=325):
     """Compute PNS from gradient waveforms using the differentiable safe_gwf_to_pns_torch.
-    gx, gy, gz: (timesteps,) torch tensors of gradient waveforms in mT/m
+    gx, gy: (timesteps,) torch tensors of gradient waveforms in mT/m
     dt: time step size in ms
     Returns: pns_x, pns_y, pns_norm, t_pns (timesteps,) torch tensors of PNS components and norm and time
     """
     device = gx.device
     dtype = gx.dtype
     
-    hw = safe_hw_from_asc.safe_hw_from_asc('safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc')
+    # hw = safe_hw_from_asc.safe_hw_from_asc('safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc')
     dt_seconds = dt / 1000  # Convert from ms to seconds
 
     # Compose gradient vector [T/m] with ramp up/down and spectral repetition (all differentiable)

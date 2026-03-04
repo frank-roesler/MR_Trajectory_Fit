@@ -17,6 +17,7 @@ from mirtorch.linear import FFTCn
 from models import FourierCurve, Ellipse
 import torch
 from params import *
+import safe_hw_from_asc
 
 torch.set_printoptions(threshold=100000)
 
@@ -43,18 +44,21 @@ with torch.no_grad():
     rosette, _, _ = make_rosette(model(t), rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     initial_recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
 
+# Hardware specs uploaded only once
+hw = safe_hw_from_asc.safe_hw_from_asc('safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc')
+
 for step in range(500): # or params["train_steps"]
-    if step % 10 == 0:
-        print(f"Step {step}...", flush=True)
+    print(f"Step {step}...", flush=True)
     traj = model(t)  # (timesteps, 2)
     rosette, *derivatives = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
 
-    # Compute PNS from gradients - now fully differentiable!
-    gx, gy, gz, _ = compute_gradients_from_traj(traj, dt, params["gamma"])
-    _, _, pns_norm, _ = compute_pns_from_gradients(gx, gy, gz, dt)
-    max_pns = pns_norm.max()  # Now a differentiable torch tensor
+    # Compute PNS from gradients - fully differentiable
+    gx, gy, t_axis = compute_gradients_from_traj(traj, dt, params["gamma"])
+    pns_x, pns_y, pns_norm, t_pns = compute_pns_from_gradients(hw, gx, gy, dt)
+    max_pns = pns_norm.max() 
 
+    # Losses
     pns_loss = loss_fcns.pns_loss(max_pns, params, mode="exp")
     grad_loss, slew_loss = loss_fcns.grad_slew_loss(*derivatives, params, mode="exp")
     image_loss = loss_fcns.loss_fn(recon, phantom)
@@ -71,7 +75,7 @@ for step in range(500): # or params["train_steps"]
         slew_rate = checkpointer.save_checkpoint(model, *derivatives, rosette)
         plotter.export_figure(export_path)
         final_plots(phantom, recon, initial_recon, plotter.total_losses, traj, slew_rate, show=False, export=True, export_path=export_path)
-    plotter.update(step, grad_loss, image_loss, slew_loss, pns_loss, total_loss, recon, traj, rosette)
+    plotter.update(step, grad_loss, image_loss, slew_loss, pns_loss, total_loss, recon, traj, rosette, gx, gy, t_axis, pns_x, pns_y, pns_norm, t_pns)
 
 
 plotter.export_figure(export_path)

@@ -45,23 +45,39 @@ def safe_hw_check(hw):
                 raise ValueError(f"Hardware specification {axis}.{param} is empty or missing!")
 
 
-def safe_tau_lowpass_torch(dgdt: torch.Tensor, tau: float, dt: float) -> torch.Tensor:
+def safe_tau_lowpass_torch(dgdt: torch.Tensor, tau: float, dt: float, cutoff: float = 0.005) -> torch.Tensor:
     """
     Differentiable RC lowpass filter (like MATLAB loop).
     dgdt: (time,)
     tau: time constant in ms
     dt: sampling interval in ms
+    cutoff: stopping criterion
     """
 
     print("Applying lowpass filter...", flush=True)
     alpha = dt / (tau + dt)
     fw = torch.zeros_like(dgdt)
     fw[0] = alpha * dgdt[0]
-    for t in range(1, dgdt.shape[0]):
+
+    shift = params['timesteps'] - 1 #understand if -1 or not
+
+    #make the estimation of max t beforehand
+    for t in range(1, dgdt.shape[0]): 
         fw[t] = alpha * dgdt[t] + (1 - alpha) * fw[t - 1]
+
+        # phi = C * exp(-t*dt/tau)
+        if t >= shift:
+            C = torch.abs(fw[shift] - fw[0])
+            exponent = torch.tensor(-t * dt / tau, device=dgdt.device, dtype=dgdt.dtype)
+            phi = C * torch.exp(exponent)
+
+            if phi <= cutoff:
+                print(f"Stopping at t = {t} ms, phi = {phi.item():.6f}")
+                return fw[:t+1]
     return fw
 
 
+# not sure about this. now not used
 def safe_tau_lowpass_torch_vec(dgdt: torch.Tensor, tau: float, dt: float) -> torch.Tensor:
     """
     Vectorized differentiable RC lowpass filter using PyTorch.
