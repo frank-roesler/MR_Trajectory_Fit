@@ -8,7 +8,7 @@ params = {
     "lr": 5e-4,
     "grad_loss_weight": 1e-2,
     "slew_loss_weight": 1e-2,
-    "pns_loss_weight": 1e-2,
+    "pns_loss_weight": 1e-3,
     "zero_filling": True,
     "timesteps": 101,
     "duration": 0.5,  # ms

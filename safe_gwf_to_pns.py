@@ -2,6 +2,7 @@ import torch
 import matplotlib.pyplot as plt
 import safe_hw_from_asc
 
+from params import *
 
 def safe_example_hw():
     """
@@ -45,70 +46,64 @@ def safe_hw_check(hw):
                 raise ValueError(f"Hardware specification {axis}.{param} is empty or missing!")
 
 
-def safe_tau_lowpass_torch(dgdt: torch.Tensor, tau: float, dt: float, cutoff: float = 0.005) -> torch.Tensor:
+
+def max_timesteps(dgdt: torch.Tensor, tau: float, dt: float, cutoff: float = 0.005) -> int:
     """
-    Differentiable RC lowpass filter (like MATLAB loop).
-    dgdt: (time,)
+    Analytical estimate of the lowpass filter stop time (non-differentiable).
+    dgdt: (time,) tensor of gradient slew rates
     tau: time constant in ms
     dt: sampling interval in ms
     cutoff: stopping criterion
     """
 
-    print("Applying lowpass filter...", flush=True)
+    dt_ms = dt * 1000
+
+    alpha = dt_ms / (tau + dt_ms)
+    fw = torch.zeros_like(dgdt)
+    fw[0] = alpha * dgdt[0]
+
+    shift = params['timesteps'] - 1
+
+    # Run filter until shift
+    for t in range(1, shift + 1): 
+        fw[t] = alpha * dgdt[t] + (1 - alpha) * fw[t - 1]
+
+    C = torch.abs(fw[shift] - fw[0])
+
+    # To manage the z-direction 
+    if C == 0:
+        return shift
+
+    # Analytical estimate of stop time
+    t_stop = int((tau / dt_ms) * torch.log(C / cutoff))
+
+    return max(t_stop, shift)
+
+
+def safe_tau_lowpass_torch(dgdt: torch.Tensor, tau: float, dt: float) -> torch.Tensor:
+    """
+    Differentiable RC lowpass filter (like MATLAB loop).
+    dgdt: (time,)
+    tau: time constant in ms
+    dt: sampling interval in ms
+    eta: estimated stop time
+    """
+
     alpha = dt / (tau + dt)
     fw = torch.zeros_like(dgdt)
     fw[0] = alpha * dgdt[0]
 
-    shift = params['timesteps'] - 1 #understand if -1 or not
-
-    #make the estimation of max t beforehand
-    for t in range(1, dgdt.shape[0]): 
+    # Continue filter only until needed
+    for t in range(1, len(dgdt)):
         fw[t] = alpha * dgdt[t] + (1 - alpha) * fw[t - 1]
 
-        # phi = C * exp(-t*dt/tau)
-        if t >= shift:
-            C = torch.abs(fw[shift] - fw[0])
-            exponent = torch.tensor(-t * dt / tau, device=dgdt.device, dtype=dgdt.dtype)
-            phi = C * torch.exp(exponent)
-
-            if phi <= cutoff:
-                print(f"Stopping at t = {t} ms, phi = {phi.item():.6f}")
-                return fw[:t+1]
     return fw
 
 
-# not sure about this. now not used
-def safe_tau_lowpass_torch_vec(dgdt: torch.Tensor, tau: float, dt: float) -> torch.Tensor:
-    """
-    Vectorized differentiable RC lowpass filter using PyTorch.
-    dgdt: (time,)
-    tau: time constant in ms
-    dt: sampling interval in ms
-    """
-    alpha = dt / (tau + dt)
-    time_len = dgdt.shape[0]
-
-    # Compute filter weights (exponentially decaying)
-    # Recursive formula: y[n] = alpha * x[n] + (1-alpha) * y[n-1]
-    # Closed form: y[n] = sum_{k=0}^{n} alpha*(1-alpha)^k * x[n-k]
-    # Equivalent: convolve x with kernel (alpha*(1-alpha)^k)
-    
-    # Create the kernel (length = time_len)
-    kernel = alpha * (1 - alpha) ** torch.arange(time_len, device=dgdt.device, dtype=dgdt.dtype)
-    
-    # Convolve with dgdt using cumulative sum trick for efficiency
-    # Flip kernel for causal convolution
-    y = torch.nn.functional.conv1d(
-        dgdt.view(1,1,-1),
-        kernel.view(1,1,-1),
-        padding=0
-    ).view(-1)
-    
-    return y
-
-
 def safe_pns_model_torch(dgdt: torch.Tensor, dt: float, hw_axis: dict) -> torch.Tensor:
+
     dt_ms = dt * 1000.0  # convert to ms
+
     lp1 = safe_tau_lowpass_torch(dgdt, hw_axis['tau1'], dt_ms)
     stim1 = hw_axis['a1'] * torch.abs(lp1)
     lp2 = safe_tau_lowpass_torch(torch.abs(dgdt), hw_axis['tau2'], dt_ms)
@@ -119,7 +114,7 @@ def safe_pns_model_torch(dgdt: torch.Tensor, dt: float, hw_axis: dict) -> torch.
     return stim
 
 
-def safe_gwf_to_pns_torch(gwf: torch.Tensor, rf: torch.Tensor, dt: float, hw: dict, do_padding=True):
+def safe_gwf_to_pns_torch(gwf: torch.Tensor, rf: torch.Tensor, dt: float, hw: dict, do_padding=False):
     gwf = gwf.to(torch.float32)
     rf = rf.to(torch.float32)
 
@@ -127,7 +122,9 @@ def safe_gwf_to_pns_torch(gwf: torch.Tensor, rf: torch.Tensor, dt: float, hw: di
     if do_padding:
         zpt = safe_longest_time_const(hw) * 4 / 1000.0
         pad_len_pre = int(round(zpt / 4 / dt))
+        #print(f"Applying zero padding: {pad_len_pre} steps before", flush=True)
         pad_len_post = int(round(zpt / 1 / dt))
+        #print(f"Applying zero padding: {pad_len_post} steps after", flush=True)
         gwf = torch.cat([torch.zeros((pad_len_pre, 3), device=gwf.device),
                          gwf,
                          torch.zeros((pad_len_post, 3), device=gwf.device)], dim=0)
@@ -144,12 +141,24 @@ def safe_gwf_to_pns_torch(gwf: torch.Tensor, rf: torch.Tensor, dt: float, hw: di
     safe_hw_check(hw)
 
     # Slew rate
-    dgdt = (gwf[1:] - gwf[:-1]) / dt
+    dgdt = (gwf[1:, :] - gwf[:-1, :]) / dt
+
+    cutoff = 0.005
+    eta = 0
+    for i, axis in enumerate(["x","y","z"]):
+        eta1 = max_timesteps(dgdt[:,i], hw[axis]["tau1"], dt, cutoff)
+        eta2 = max_timesteps(torch.abs(dgdt[:,i]), hw[axis]["tau2"], dt, cutoff)
+        eta3 = max_timesteps(dgdt[:,i], hw[axis]["tau3"], dt, cutoff)
+
+        eta = max(eta, eta1, eta2, eta3)
+
+    dgdt = dgdt[:eta, :]
 
     # PNS calculation
-    pns = torch.zeros_like(dgdt)
-    for i, ax in enumerate(['x','y','z']):
-        pns[:, i] = safe_pns_model_torch(dgdt[:, i], dt, hw[ax])
+    pns_x = safe_pns_model_torch(dgdt[:, 0], dt, hw["x"])
+    pns_y = safe_pns_model_torch(dgdt[:, 1], dt, hw["y"])
+    pns_z = safe_pns_model_torch(dgdt[:, 2], dt, hw["z"])
+    pns = torch.stack([pns_x, pns_y, pns_z], dim=1)
 
     res = {
         'pns': pns,

@@ -43,8 +43,8 @@ class ImageRecon:
 
     def sample_k_space_values(self, fft, rosette):
         rosette = rosette.reshape(1, 1, rosette.shape[0], 2)
-        sampled_r = F.grid_sample(fft.real.detach(), rosette / self.kmax_img, mode="bicubic", align_corners=True)
-        sampled_i = F.grid_sample(fft.imag.detach(), rosette / self.kmax_img, mode="bicubic", align_corners=True)
+        sampled_r = F.grid_sample(fft.real.detach(), rosette / self.kmax_img, mode="bilinear", align_corners=True)
+        sampled_i = F.grid_sample(fft.imag.detach(), rosette / self.kmax_img, mode="bilinear", align_corners=True)
         sampled = torch.complex(sampled_r, sampled_i).squeeze(0)
         if self.zero_filling:
             sampled[:, :, -2:] *= 0
@@ -71,8 +71,8 @@ class ImageRecon:
     def reconstruct_img_kbnufft(self, rosette, sampled):
         rosette = rosette.squeeze().permute(1, 0) / self.kmax_img * torch.pi
         sampled = sampled.reshape(1, 1, -1)
-        dcf = self.dcfnet(rosette[:, : self.timesteps - 1].unsqueeze(0)).squeeze() + 0j
-        dcf = torch.cat([dcf.repeat((1, self.n_petals)), torch.zeros(1, 2, device=dcf.device)], dim=-1).unsqueeze(0)
+        dcf = self.dcfnet(rosette[:, : self.timesteps - 1].unsqueeze(0)).squeeze()
+        dcf = torch.cat([dcf.repeat((1, self.n_petals)), torch.zeros(1, 2, device=dcf.device)], dim=-1).unsqueeze(0) + 0j
         rosette = rosette.permute(1, 0)
         kbnufft.nufft.set_dims(sampled.shape[-1], (self.img_size, self.img_size), device=rosette.device, Nb=1)
         kbnufft.nufft.precompute(rosette)
@@ -211,18 +211,22 @@ class TrainPlotter:
         ax_pns_norm = axs[1, 2] # New: max PNS Norm Plot
 
         # --- 1. Loss Plot (Top Left) ---
-        ax_total_loss = ax_loss.twinx()
-        (grad_loss_line,) = ax_loss.semilogy([], [], label="Grad Loss", linewidth=0.7, color="r")
-        (slew_loss_line,) = ax_loss.semilogy([], [], label="Slew Loss", linewidth=0.7, color="g")
-        (pns_loss_line,) = ax_loss.semilogy([], [], label="PNS Loss", linewidth=0.7, color="m")
+
+        # Constraint losses on a secondary y-axis
+        ax_single_losses = ax_loss.twinx()
+        (grad_loss_line,) = ax_single_losses.semilogy([], [], label="Grad Loss", linewidth=0.7, color="r")
+        (slew_loss_line,) = ax_single_losses.semilogy([], [], label="Slew Loss", linewidth=0.7, color="g")
+        (pns_loss_line,) = ax_single_losses.semilogy([], [], label="PNS Loss", linewidth=0.7, color="m")
+
+        # Image loss and total loss on the primary y-axis
         (img_loss_line,) = ax_loss.semilogy([], [], label="Image Loss", linewidth=0.7, color="b")
         (img_loss_line_mirtorch,) = ax_loss.semilogy([], [], label="Image Loss MIRTorch", linewidth=0.7, color="orange")
-        (total_loss_line,) = ax_total_loss.semilogy([], [], label="Total Loss", linewidth=0.7, color="k")
+        (total_loss_line,) = ax_loss.semilogy([], [], label="Total Loss", linewidth=0.7, color="k")
         
         ax_loss.set_xlabel("Step")
         ax_loss.set_ylabel("Individual Losses")
         ax_loss.set_title("Running Loss")
-        ax_total_loss.set_ylabel("Total Loss")
+        ax_single_losses.set_ylabel("Grad-Slew-PNS Losses")
         lns = [grad_loss_line, slew_loss_line, pns_loss_line, img_loss_line, total_loss_line, img_loss_line_mirtorch]
         labs = [l.get_label() for l in lns]
         ax_loss.legend(lns, labs, loc=0, prop={"size": 6})
@@ -287,7 +291,7 @@ class TrainPlotter:
         self.pns_norm_max_line = pns_norm_max_line
         
         self.ax_loss = ax_loss
-        self.ax_total_loss = ax_total_loss
+        self.ax_single_losses = ax_single_losses
         self.ax_traj = ax_traj
         self.ax_img = ax_img
         self.ax_grad = ax_grad
@@ -320,12 +324,14 @@ class TrainPlotter:
             self.img_loss_line_mirtorch.set_data(range(0, 10 * len(self.img_losses_mirtorch), 10), self.img_losses_mirtorch)
             self.img_loss_line.set_data(range(len(self.img_losses)), self.img_losses)
             self.grad_loss_line.set_data(range(len(self.grad_losses)), self.grad_losses)
+            self.pns_loss_line.set_data(range(len(self.pns_losses)), self.pns_losses)
             self.slew_loss_line.set_data(range(len(self.slew_losses)), self.slew_losses)
             self.total_loss_line.set_data(range(len(self.img_losses)), self.total_losses)
             
-            self.ax_total_loss.relim()
-            self.ax_total_loss.autoscale_view()
-            self.ax_loss.set_ylim(0.9 * min(self.img_losses), 1.1 * max(self.img_losses))
+            self.ax_single_losses.relim()
+            self.ax_single_losses.autoscale_view()
+            self.ax_loss.relim()
+            self.ax_loss.autoscale_view()
             
             img = recon.abs().detach().cpu().numpy()
             self.im_recon.set_data(img)
@@ -368,6 +374,9 @@ class TrainPlotter:
             self.ax_pns_norm.relim()
             self.ax_pns_norm.autoscale_view()
             
+            self.fig.canvas.draw_idle()
+            self.fig.canvas.flush_events()
+
             plt.pause(0.01)
 
     def print_info(self, step, image_loss, grad_loss, slew_loss, pns_loss, d_max, dd_max, pns_max, g_x, g_y):
@@ -482,8 +491,9 @@ def get_device():
     import torch
     if torch.cuda.is_available():
         return torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        return torch.device("mps")
+    # Disable MPS due to memory constraints - use CPU instead
+    # elif torch.backends.mps.is_available():
+    #     return torch.device("mps")
     else:
         return torch.device("cpu")
         
@@ -551,43 +561,60 @@ def compute_gradients_from_traj(traj, dt, gamma):
     return gx, gy, t_axis
 
 
-def compute_pns_from_gradients(hw, gx, gy, dt, gradPreEmphPts=10, specRes=325):
+def compute_pns_from_gradients(hw, gx, gy, dt, gradPreEmphPts=10, specRes=325, Ramp=False):
     """Compute PNS from gradient waveforms using the differentiable safe_gwf_to_pns_torch.
+    
     gx, gy: (timesteps,) torch tensors of gradient waveforms in mT/m
     dt: time step size in ms
-    Returns: pns_x, pns_y, pns_norm, t_pns (timesteps,) torch tensors of PNS components and norm and time
+    Ramp: if True add ramp up/down, otherwise use only the repeated waveform
+    
+    Returns:
+        pns_x, pns_y, pns_norm, t_pns
     """
     device = gx.device
     dtype = gx.dtype
-    
-    # hw = safe_hw_from_asc.safe_hw_from_asc('safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc')
-    dt_seconds = dt / 1000  # Convert from ms to seconds
 
-    # Compose gradient vector [T/m] with ramp up/down and spectral repetition (all differentiable)
-    # Ramp up
-    ramp_up_x = gx[0] * torch.linspace(0, 1, gradPreEmphPts, device=device, dtype=dtype)
-    ramp_dn_x = gx[-1] * torch.linspace(1, 0, gradPreEmphPts, device=device, dtype=dtype)
-    full_ro_x = gx.repeat(specRes)  # Repeat for spectral resolution
-    gVecX = torch.cat([ramp_up_x, full_ro_x, ramp_dn_x]) * 1e-3  # Convert mT/m to T/m
+    dt_seconds = dt / 1000  # Convert ms → s
 
-    ramp_up_y = gy[0] * torch.linspace(0, 1, gradPreEmphPts, device=device, dtype=dtype)
-    ramp_dn_y = gy[-1] * torch.linspace(1, 0, gradPreEmphPts, device=device, dtype=dtype)
+    # Repeat waveform for spectral resolution
+    full_ro_x = gx.repeat(specRes)
     full_ro_y = gy.repeat(specRes)
-    gVecY = torch.cat([ramp_up_y, full_ro_y, ramp_dn_y]) * 1e-3
-    
+
+    if Ramp:
+        # Ramp up/down
+        ramp_up_x = gx[0] * torch.linspace(0, 1, gradPreEmphPts, device=device, dtype=dtype)
+        ramp_dn_x = gx[-1] * torch.linspace(1, 0, gradPreEmphPts, device=device, dtype=dtype)
+
+        ramp_up_y = gy[0] * torch.linspace(0, 1, gradPreEmphPts, device=device, dtype=dtype)
+        ramp_dn_y = gy[-1] * torch.linspace(1, 0, gradPreEmphPts, device=device, dtype=dtype)
+
+        gVecX = torch.cat([ramp_up_x[:-1], full_ro_x, ramp_dn_x[1:]])
+        gVecY = torch.cat([ramp_up_y[:-1], full_ro_y, ramp_dn_y[1:]])
+
+    else:
+        gVecX = full_ro_x
+        gVecY = full_ro_y
+
+    # Convert mT/m in T/m
+    gVecX = gVecX * 1e-3
+    gVecY = gVecY * 1e-3
+
     gVecZ = torch.zeros_like(gVecX)
     gVec = torch.stack([gVecX, gVecY, gVecZ], dim=1)  # (time, 3)
 
     rfVec = torch.ones(len(gVec), device=device, dtype=dtype)
 
-    # Use differentiable torch version
-    pns, res = safe_gwf_to_pns.safe_gwf_to_pns_torch(gVec, rfVec, dt_seconds, hw, do_padding=True)
-    
+    # Compute PNS
+    _, res = safe_gwf_to_pns.safe_gwf_to_pns_torch(
+        gVec, rfVec, dt_seconds, hw, do_padding=False
+    )
+
     pns_x = res['pns'][:, 0]
     pns_y = res['pns'][:, 1]
     pns_norm = torch.norm(res['pns'], dim=1)
-    t_pns = torch.arange(len(res['pns']), device=device, dtype=dtype) * dt_seconds * 1000  # Time in ms
-    
+
+    t_pns = torch.arange(len(res['pns']), device=device, dtype=dtype) * dt_seconds * 1000  # ms
+
     return pns_x, pns_y, pns_norm, t_pns
 
 
