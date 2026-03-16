@@ -5,6 +5,7 @@ from utils_3 import (
     Checkpointer,
     compute_gradients_from_traj,
     compute_pns_from_gradients,
+    compute_fast_pns_from_gradients,
     get_phantom,
     make_rosette,
     final_plots,
@@ -47,15 +48,15 @@ with torch.no_grad():
 # Hardware specs uploaded only once
 hw = safe_hw_from_asc.safe_hw_from_asc('safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc')
 
-for step in range(500): # or params["train_steps"]
-    print(f"Step {step}...", flush=True)
+for step in range(params["train_steps"]): # or params["train_steps"]
+    #print(f"Step {step}...", flush=True)
     traj = model(t)  # (timesteps, 2)
     rosette, *derivatives = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
 
     # Compute PNS from gradients - fully differentiable
     gx, gy, t_axis = compute_gradients_from_traj(traj, dt, params["gamma"])
-    pns_x, pns_y, pns_norm, t_pns = compute_pns_from_gradients(hw, gx, gy, dt)
+    pns_x, pns_y, pns_norm, t_pns = compute_fast_pns_from_gradients(hw, gx, gy, dt)
     max_pns = pns_norm.max() 
 
     # Losses

@@ -224,7 +224,7 @@ class TrainPlotter:
         (total_loss_line,) = ax_loss.semilogy([], [], label="Total Loss", linewidth=0.7, color="k")
         
         ax_loss.set_xlabel("Step")
-        ax_loss.set_ylabel("Individual Losses")
+        ax_loss.set_ylabel("Image and tot. Losses")
         ax_loss.set_title("Running Loss")
         ax_single_losses.set_ylabel("Grad-Slew-PNS Losses")
         lns = [grad_loss_line, slew_loss_line, pns_loss_line, img_loss_line, total_loss_line, img_loss_line_mirtorch]
@@ -245,7 +245,7 @@ class TrainPlotter:
         (gx_line,) = ax_grad.plot([], [], label="Gx", linewidth=1.0, color="tab:blue")
         (gy_line,) = ax_grad.plot([], [], label="Gy", linewidth=1.0, color="tab:orange")
         ax_grad.set_title("Gradients for shown traj.")
-        ax_grad.set_xlabel("Time Step")
+        ax_grad.set_xlabel("Time (ms)")
         ax_grad.set_ylabel("Amplitude (mT/m)")
         ax_grad.legend(loc="upper right", prop={"size": 8})
         ax_grad.grid(True, linestyle='--', alpha=0.5)
@@ -607,6 +607,41 @@ def compute_pns_from_gradients(hw, gx, gy, dt, gradPreEmphPts=10, specRes=325, R
     # Compute PNS
     _, res = safe_gwf_to_pns.safe_gwf_to_pns_torch(
         gVec, rfVec, dt_seconds, hw, do_padding=False
+    )
+
+    pns_x = res['pns'][:, 0]
+    pns_y = res['pns'][:, 1]
+    pns_norm = torch.norm(res['pns'], dim=1)
+
+    t_pns = torch.arange(len(res['pns']), device=device, dtype=dtype) * dt_seconds * 1000  # ms
+
+    return pns_x, pns_y, pns_norm, t_pns
+
+
+def compute_fast_pns_from_gradients(hw, gx, gy, dt):
+    """Compute PNS from gradient waveforms using the fast FFT-based method
+    
+    gx, gy: (timesteps,) torch tensors of gradient waveforms in mT/m
+    dt: time step size in ms
+    
+    Returns:
+        pns_x, pns_y, pns_norm, t_pns
+    """
+    device = gx.device
+    dtype = gx.dtype
+
+    dt_seconds = dt / 1000  # Convert ms → s
+
+    gVecX = gx * 1e-3  # Convert mT/m to T/m
+    gVecY = gy * 1e-3
+    gVecZ = torch.zeros_like(gVecX)
+    gVec = torch.stack([gVecX, gVecY, gVecZ], dim=1)  # (time, 3)
+
+    rfVec = torch.ones(len(gVec), device=device, dtype=dtype)
+
+    # Compute PNS
+    _, res = safe_gwf_to_pns.fft_gwf_to_pns_torch(
+        gVec, rfVec, dt_seconds, hw
     )
 
     pns_x = res['pns'][:, 0]
