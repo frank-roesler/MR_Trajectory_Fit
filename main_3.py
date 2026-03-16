@@ -48,7 +48,7 @@ with torch.no_grad():
 # Hardware specs uploaded only once
 hw = safe_hw_from_asc.safe_hw_from_asc('safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc')
 
-for step in range(params["train_steps"]): # or params["train_steps"]
+for step in range(params["train_steps"]):
     #print(f"Step {step}...", flush=True)
     traj = model(t)  # (timesteps, 2)
     rosette, *derivatives = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
@@ -60,8 +60,8 @@ for step in range(params["train_steps"]): # or params["train_steps"]
     max_pns = pns_norm.max() 
 
     # Losses
-    pns_loss = loss_fcns.pns_loss(max_pns, params, mode="exp")
-    grad_loss, slew_loss = loss_fcns.grad_slew_loss(*derivatives, params, mode="exp")
+    pns_loss = loss_fcns.pns_loss(max_pns, params, mode="exp", delta=1)
+    grad_loss, slew_loss = loss_fcns.grad_slew_loss(*derivatives, params, grad_mode="exp", slew_mode="exp")
     image_loss = loss_fcns.loss_fn(recon, phantom)
     total_loss = image_loss + grad_loss + slew_loss + pns_loss
 

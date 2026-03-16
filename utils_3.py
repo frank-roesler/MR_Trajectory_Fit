@@ -150,36 +150,92 @@ class LossCollection:
         return loss
 
     def threshold_loss(self, x, threshold):
-        threshold_loss = torch.max(torch.abs(x), dim=0).values - threshold
-        threshold_loss[threshold_loss < 0] = 0.0
-        return threshold_loss**2
+        excess = torch.clamp(x - threshold, min=0.0)
+        return excess ** 2
 
-    def grad_slew_loss(self, d_max_rosette, dd_max_rosette, params, mode="exp"):
-        """Compute a loss self,based on the slew rate of the trajectory.
-        traj: (timesteps, 2) tensor
-        dt: time step size (scalar)
-        Returns: slew_loss (scalar)
-        """
+    def logb_star_loss(self, x, threshold, delta=1):
+        """(arXviv:2505.07117v1)"""
+        x_delta = threshold - delta
+        
+        # Safe x prevents NaNs in the log function during the forward pass
+        safe_x = torch.where(x <= x_delta, x, torch.full_like(x, x_delta))
+        
+        branch_1 = -torch.log(threshold - safe_x)
+        
+        # Ensure delta scalar is a tensor on the correct device for computation
+        delta_tensor = torch.tensor(delta, device=x.device, dtype=x.dtype)
+        branch_2 = ((x - x_delta) / delta_tensor) - torch.log(delta_tensor)
+        
+        elementwise_loss = torch.where(x <= x_delta, branch_1, branch_2)
+        return elementwise_loss
+
+    def effective_potential_loss(self, x, threshold, A=40.0, B=30.0, epsilon=0.5):
+        r = torch.clamp(threshold - x, min=epsilon)
+        
+        repulsive_core = A / (r ** 2)
+        attractive_tail = B / r
+        potential = repulsive_core - attractive_tail
+
+        overshoot = torch.clamp(x - threshold, min=0.0)
+        penalty = 100.0 * (overshoot ** 2)
+        
+        return potential + penalty
+
+    def grad_loss(self, d_max_rosette, params, mode="exp"):
         unit = params["gamma"] / 1000
+        threshold = params["grad_max"] * unit
+        
         if mode == "exp":
-            grad_loss = torch.exp(0.1 * (d_max_rosette - params["grad_max"] * unit))
-            slew_loss = torch.exp(0.1 * (dd_max_rosette - params["slew_rate"] * unit))
+            loss = torch.exp(0.1 * (d_max_rosette - threshold))
         elif mode == "threshold":
-            grad_loss = self.threshold_loss(d_max_rosette, params["grad_max"] * unit)
-            slew_loss = self.threshold_loss(dd_max_rosette, params["slew_rate"] * unit)
+            loss = self.threshold_loss(d_max_rosette, threshold)
         else:
-            grad_loss = torch.zeros(1, device=d_max_rosette.device)
-            slew_loss = torch.zeros(1, device=d_max_rosette.device)
-        return params["grad_loss_weight"] * grad_loss.sum(), params["slew_loss_weight"] * slew_loss.sum()
+            loss = torch.zeros(1, device=d_max_rosette.device)
+            
+        return params["grad_loss_weight"] * loss.sum()
 
-    def pns_loss(self, max_pns, params, mode="exp"):
+    def slew_loss(self, dd_max_rosette, params, mode="exp", delta=1):
+        unit = params["gamma"] / 1000
+        threshold = params["slew_rate"] * unit
+        
         if mode == "exp":
-            pns_loss = torch.exp(0.1 * (max_pns - params["pns_threshold"]))
+            loss = torch.exp(0.1 * (dd_max_rosette - threshold))
         elif mode == "threshold":
-            pns_loss = self.threshold_loss(max_pns, params["pns_threshold"])
+            loss = self.threshold_loss(dd_max_rosette, threshold)
+        elif mode == "logb_star":
+            loss = self.logb_star_loss(dd_max_rosette, threshold, delta=delta)
+        elif mode == "effective_potential":
+            loss = self.effective_potential_loss(dd_max_rosette, threshold)
         else:
-            pns_loss = torch.zeros(1, device=max_pns.device)
-        return params["pns_loss_weight"] * pns_loss.sum()
+            loss = torch.zeros(1, device=dd_max_rosette.device)
+            
+        return params["slew_loss_weight"] * loss.sum()
+    
+    def grad_slew_loss(self, d_max_rosette, dd_max_rosette, params, grad_mode="exp", slew_mode="exp", delta=1):
+        """
+        Compute a loss based on the gradient and slew rate of the trajectory.
+        Returns: grad_loss (scalar), slew_loss (scalar)
+        """
+        grad_loss_val = self.grad_loss(d_max_rosette, params, mode=grad_mode)
+        slew_loss_val = self.slew_loss(dd_max_rosette, params, mode=slew_mode, delta=delta)
+        
+        return grad_loss_val, slew_loss_val
+
+    def pns_loss(self, max_pns, params, mode="exp", delta=1):
+        threshold = params["pns_threshold"]
+        
+        if mode == "exp":
+            loss = torch.exp(0.1 * (max_pns - threshold))
+        elif mode == "threshold":
+            loss = self.threshold_loss(max_pns, threshold)
+        elif mode == "logb_star":
+            loss = self.logb_star_loss(max_pns, threshold, delta=delta)
+        elif mode == "effective_potential":
+            loss = self.effective_potential_loss(max_pns, threshold)
+        else:
+            loss = torch.zeros(1, device=max_pns.device)
+            
+        return params["pns_loss_weight"] * loss.sum()
 
 
 class TrainPlotter:
@@ -203,7 +259,7 @@ class TrainPlotter:
         self.fig, axs = plt.subplots(2, 3, figsize=(15, 8), constrained_layout=True)
         
         # Unpack axes for easier access
-        ax_loss = axs[0, 0]
+        ax_single_losses = axs[0, 0]
         ax_img  = axs[0, 1]
         ax_traj = axs[0, 2]
         ax_grad = axs[1, 0] # New: Gradient Plot
@@ -213,7 +269,7 @@ class TrainPlotter:
         # --- 1. Loss Plot (Top Left) ---
 
         # Constraint losses on a secondary y-axis
-        ax_single_losses = ax_loss.twinx()
+        ax_loss = ax_single_losses.twinx()
         (grad_loss_line,) = ax_single_losses.semilogy([], [], label="Grad Loss", linewidth=0.7, color="r")
         (slew_loss_line,) = ax_single_losses.semilogy([], [], label="Slew Loss", linewidth=0.7, color="g")
         (pns_loss_line,) = ax_single_losses.semilogy([], [], label="PNS Loss", linewidth=0.7, color="m")
