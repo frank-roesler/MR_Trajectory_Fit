@@ -15,8 +15,10 @@ from mirtorch_pkg import NuSense_om, NuSense
 from models import DCFNet, UNet1D, FCN1D
 import json
 from os.path import join, dirname
+from time import time
 
 import safe_gwf_to_pns
+
 # import safe_hw_from_asc
 
 
@@ -151,53 +153,53 @@ class LossCollection:
 
     def threshold_loss(self, x, threshold):
         excess = torch.clamp(x - threshold, min=0.0)
-        return excess ** 2
+        return excess**2
 
     def logb_star_loss(self, x, threshold, delta=1):
         """(arXviv:2505.07117v1)"""
         x_delta = threshold - delta
-        
+
         # Safe x prevents NaNs in the log function during the forward pass
         safe_x = torch.where(x <= x_delta, x, torch.full_like(x, x_delta))
-        
+
         branch_1 = -torch.log(threshold - safe_x)
-        
+
         # Ensure delta scalar is a tensor on the correct device for computation
         delta_tensor = torch.tensor(delta, device=x.device, dtype=x.dtype)
         branch_2 = ((x - x_delta) / delta_tensor) - torch.log(delta_tensor)
-        
+
         elementwise_loss = torch.where(x <= x_delta, branch_1, branch_2)
         return elementwise_loss
 
     def effective_potential_loss(self, x, threshold, A=40.0, B=30.0, epsilon=0.5):
         r = torch.clamp(threshold - x, min=epsilon)
-        
-        repulsive_core = A / (r ** 2)
+
+        repulsive_core = A / (r**2)
         attractive_tail = B / r
         potential = repulsive_core - attractive_tail
 
         overshoot = torch.clamp(x - threshold, min=0.0)
-        penalty = 100.0 * (overshoot ** 2)
-        
+        penalty = 100.0 * (overshoot**2)
+
         return potential + penalty
 
     def grad_loss(self, d_max_rosette, params, mode="exp"):
         unit = params["gamma"] / 1000
         threshold = params["grad_max"] * unit
-        
+
         if mode == "exp":
             loss = torch.exp(0.1 * (d_max_rosette - threshold))
         elif mode == "threshold":
             loss = self.threshold_loss(d_max_rosette, threshold)
         else:
             loss = torch.zeros(1, device=d_max_rosette.device)
-            
+
         return params["grad_loss_weight"] * loss.sum()
 
     def slew_loss(self, dd_max_rosette, params, mode="exp", delta=1):
         unit = params["gamma"] / 1000
         threshold = params["slew_rate"] * unit
-        
+
         if mode == "exp":
             loss = torch.exp(0.1 * (dd_max_rosette - threshold))
         elif mode == "threshold":
@@ -208,9 +210,9 @@ class LossCollection:
             loss = self.effective_potential_loss(dd_max_rosette, threshold)
         else:
             loss = torch.zeros(1, device=dd_max_rosette.device)
-            
+
         return params["slew_loss_weight"] * loss.sum()
-    
+
     def grad_slew_loss(self, d_max_rosette, dd_max_rosette, params, grad_mode="exp", slew_mode="exp", delta=1):
         """
         Compute a loss based on the gradient and slew rate of the trajectory.
@@ -218,12 +220,12 @@ class LossCollection:
         """
         grad_loss_val = self.grad_loss(d_max_rosette, params, mode=grad_mode)
         slew_loss_val = self.slew_loss(dd_max_rosette, params, mode=slew_mode, delta=delta)
-        
+
         return grad_loss_val, slew_loss_val
 
     def pns_loss(self, max_pns, params, mode="exp", delta=1):
         threshold = params["pns_threshold"]
-        
+
         if mode == "exp":
             loss = torch.exp(0.1 * (max_pns - threshold))
         elif mode == "threshold":
@@ -234,18 +236,19 @@ class LossCollection:
             loss = self.effective_potential_loss(max_pns, threshold)
         else:
             loss = torch.zeros(1, device=max_pns.device)
-            
+
         return params["pns_loss_weight"] * loss.sum()
 
 
 class TrainPlotter:
     def __init__(self, params, fft, reconstructor, phantom, loss_fn, optimizer):
+        self.time = time()
         self.best_loss = float("inf")
         self.train_steps = params["train_steps"]
         self.gamma = params["gamma"]
         # Calculate dt for gradient computation: duration / (steps - 1)
         self.dt = params["duration"] / (params["timesteps"] - 1)
-        
+
         self.fft = fft
         self.reconstructor = reconstructor
         self.phantom = phantom
@@ -257,19 +260,19 @@ class TrainPlotter:
         # --- 0. Figure Setup ---
         # Returns a 2x3 array of axes
         self.fig, axs = plt.subplots(2, 3, figsize=(15, 8), constrained_layout=True)
-        
+
         # Unpack axes for easier access
         ax_loss = axs[0, 0]
-        ax_img  = axs[0, 1]
+        ax_img = axs[0, 1]
         ax_traj = axs[0, 2]
-        ax_grad = axs[1, 0] # New: Gradient Plot
-        ax_pns = axs[1, 1] # New: PNS Plot
-        ax_pns_norm = axs[1, 2] # New: max PNS Norm Plot
+        ax_grad = axs[1, 0]  # New: Gradient Plot
+        ax_pns = axs[1, 1]  # New: PNS Plot
+        ax_pns_norm = axs[1, 2]  # New: max PNS Norm Plot
 
         # --- 1. Loss Plot (Top Left) ---
 
-        # Constraint losses on a secondary y-axis - not anymore 
-        #ax_loss = ax_single_losses.twinx()
+        # Constraint losses on a secondary y-axis - not anymore
+        # ax_loss = ax_single_losses.twinx()
         (grad_loss_line,) = ax_loss.semilogy([], [], label="Grad Loss", linewidth=0.7, color="r")
         (slew_loss_line,) = ax_loss.semilogy([], [], label="Slew Loss", linewidth=0.7, color="g")
         (pns_loss_line,) = ax_loss.semilogy([], [], label="PNS Loss", linewidth=0.7, color="m")
@@ -278,11 +281,11 @@ class TrainPlotter:
         (img_loss_line,) = ax_loss.semilogy([], [], label="Image Loss", linewidth=0.7, color="b")
         (img_loss_line_mirtorch,) = ax_loss.semilogy([], [], label="Image Loss MIRTorch", linewidth=0.7, color="orange")
         (total_loss_line,) = ax_loss.semilogy([], [], label="Total Loss", linewidth=0.7, color="k")
-        
+
         ax_loss.set_xlabel("Step")
         ax_loss.set_ylabel("Loss")
         ax_loss.set_title("Running Loss")
-        #ax_single_losses.set_ylabel("Grad-Slew-PNS Losses")
+        # ax_single_losses.set_ylabel("Grad-Slew-PNS Losses")
         lns = [grad_loss_line, slew_loss_line, pns_loss_line, img_loss_line, total_loss_line, img_loss_line_mirtorch]
         labs = [l.get_label() for l in lns]
         ax_loss.legend(lns, labs, loc=0, prop={"size": 6})
@@ -304,18 +307,18 @@ class TrainPlotter:
         ax_grad.set_xlabel("Time (ms)")
         ax_grad.set_ylabel("Amplitude (mT/m)")
         ax_grad.legend(loc="upper right", prop={"size": 8})
-        ax_grad.grid(True, linestyle='--', alpha=0.5)
+        ax_grad.grid(True, linestyle="--", alpha=0.5)
 
         # --- 5. PNS Plots (Bottom Middle) ---
         ax_pns = axs[1, 1]
-        (pns_x_line,) = ax_pns.plot([], [], label="PNS X", linewidth=0.7, color="tab:blue")
-        (pns_y_line,) = ax_pns.plot([], [], label="PNS Y", linewidth=0.7, color="tab:orange")
-        (pns_norm_line,) = ax_pns.plot([], [], label="PNS Norm", linewidth=1.0, color="k")
+        (pns_x_line,) = ax_pns.plot([], [], label="PNS X", linewidth=0.3, color="tab:blue")
+        (pns_y_line,) = ax_pns.plot([], [], label="PNS Y", linewidth=0.3, color="tab:orange")
+        (pns_norm_line,) = ax_pns.plot([], [], label="PNS Norm", linewidth=0.3, color="k")
         ax_pns.set_title("PNS for shown traj.")
         ax_pns.set_xlabel("Time (ms)")
         ax_pns.set_ylabel("Stimulation (%)")
         ax_pns.legend(loc="upper right", prop={"size": 8})
-        ax_pns.grid(True, linestyle='--', alpha=0.5)
+        ax_pns.grid(True, linestyle="--", alpha=0.5)
 
         # --- 6. PNS Norm Plot (Bottom Right) ---
         ax_pns_norm = axs[1, 2]
@@ -324,7 +327,7 @@ class TrainPlotter:
         ax_pns_norm.set_xlabel("Step")
         ax_pns_norm.set_ylabel("Max Stimulation (%)")
         ax_pns_norm.legend(loc="upper right", prop={"size": 8})
-        ax_pns_norm.grid(True, linestyle='--', alpha=0.5)
+        ax_pns_norm.grid(True, linestyle="--", alpha=0.5)
 
         plt.show(block=False)
 
@@ -337,7 +340,7 @@ class TrainPlotter:
         self.total_loss_line = total_loss_line
         self.im_recon = im_recon
         self.traj_line = traj_line
-        
+
         self.gx_line = gx_line
         self.gy_line = gy_line
 
@@ -345,9 +348,9 @@ class TrainPlotter:
         self.pns_y_line = pns_y_line
         self.pns_norm_line = pns_norm_line
         self.pns_norm_max_line = pns_norm_max_line
-        
+
         self.ax_loss = ax_loss
-        #self.ax_single_losses = ax_single_losses
+        # self.ax_single_losses = ax_single_losses
         self.ax_traj = ax_traj
         self.ax_img = ax_img
         self.ax_grad = ax_grad
@@ -363,41 +366,41 @@ class TrainPlotter:
         self.pns_losses = []
 
     def update(self, step, grad_loss, img_loss, slew_loss, pns_loss, total_loss, recon, traj, rosette, gx, gy, t_axis, pns_x, pns_y, pns_norm, t_pns):
-        
+
         # Update for loss plot (final_figure.png and train_figure.png), evaluation, checkpoint..
         self.grad_losses.append(grad_loss.detach().item())
         self.img_losses.append(img_loss.detach().item())
         self.slew_losses.append(slew_loss.detach().item())
         self.pns_losses.append(pns_loss.detach().item())
         self.total_losses.append(total_loss.detach().item())
-        
+
         if step % 10 == 0:
             # --- Update Recon and Losses (for the image) ---
             recon_mirtorch = self.reconstructor.reconstruct_img(self.fft, rosette, method="mirtorch")
             image_loss_mirtorch = self.loss_fn(recon_mirtorch, self.phantom)
             self.img_losses_mirtorch.append(image_loss_mirtorch.detach().item())
-            
+
             self.img_loss_line_mirtorch.set_data(range(0, 10 * len(self.img_losses_mirtorch), 10), self.img_losses_mirtorch)
             self.img_loss_line.set_data(range(len(self.img_losses)), self.img_losses)
             self.grad_loss_line.set_data(range(len(self.grad_losses)), self.grad_losses)
             self.pns_loss_line.set_data(range(len(self.pns_losses)), self.pns_losses)
             self.slew_loss_line.set_data(range(len(self.slew_losses)), self.slew_losses)
             self.total_loss_line.set_data(range(len(self.img_losses)), self.total_losses)
-            
-            #self.ax_single_losses.relim()
-            #self.ax_single_losses.autoscale_view()
+
+            # self.ax_single_losses.relim()
+            # self.ax_single_losses.autoscale_view()
             self.ax_loss.relim()
             self.ax_loss.autoscale_view()
-            
+
             img = recon.abs().detach().cpu().numpy()
             self.im_recon.set_data(img)
             self.im_recon.set_clim(vmin=0, vmax=img.max())
-            
+
             # --- Update Trajectory ---
             self.traj_line.set_data(traj[:, 0].detach().cpu().numpy(), traj[:, 1].detach().cpu().numpy())
             self.ax_traj.relim()
             self.ax_traj.autoscale_view()
-            
+
             """
             # --- Update Gradients (New) ---
             gx, gy, t_axis = compute_gradients_from_traj(traj, self.dt, self.gamma)
@@ -410,7 +413,7 @@ class TrainPlotter:
             self.ax_grad.autoscale_view()
 
             self.ax_img.set_title(f"Recon (abs) Step {step+1}")
-            
+
             """
             # --- Update PNS (New) ---
             pns_x, pns_y, pns_norm, t_pns = compute_pns_from_gradients(gx, gy, self.dt)
@@ -422,14 +425,14 @@ class TrainPlotter:
             self.pns_norm_line.set_data(t_pns.detach().cpu().numpy(), pns_norm.detach().cpu().numpy())
             self.ax_pns.relim()
             self.ax_pns.autoscale_view()
-            
+
             # 4. Track and plot maximum PNS norm over steps
             max_pns = pns_norm.max().item()
             self.max_pns_norms.append(max_pns)
             self.pns_norm_max_line.set_data(range(0, 10 * len(self.max_pns_norms), 10), self.max_pns_norms)
             self.ax_pns_norm.relim()
             self.ax_pns_norm.autoscale_view()
-            
+
             self.fig.canvas.draw_idle()
             self.fig.canvas.flush_events()
 
@@ -454,7 +457,8 @@ class TrainPlotter:
             print(f"Max PNS Norm: {pns_val:.2f}%")
             print(f"Max Gx: {g_x.abs().max().item():.2f} mT/m")
             print(f"Max Gy: {g_y.abs().max().item():.2f} mT/m")
-
+            print(f"Time for 10 steps:", time() - self.time)
+            self.time = time()
             print("=" * 100)
 
     def export_figure(self, path):
@@ -545,6 +549,7 @@ class Checkpointer:
 
 def get_device():
     import torch
+
     if torch.cuda.is_available():
         return torch.device("cuda")
     # Disable MPS due to memory constraints - use CPU instead
@@ -552,7 +557,7 @@ def get_device():
     #     return torch.device("mps")
     else:
         return torch.device("cpu")
-        
+
 
 def get_phantom(size=(512, 512), type="shepp_logan"):
     """Generate a Shepp-Logan phantom as a PyTorch tensor."""
@@ -577,7 +582,7 @@ def get_rotation_matrix(n_petals, device=torch.device("cpu")):
             [torch.cos(angle_radians), -torch.sin(angle_radians)],
             [torch.sin(angle_radians), torch.cos(angle_radians)],
         ],
-        device=device
+        device=device,
     )
     return rotation_matrix
 
@@ -619,18 +624,16 @@ def compute_gradients_from_traj(traj, dt, gamma):
 
 def compute_pns_from_gradients(hw, gx, gy, dt, gradPreEmphPts=10, specRes=325, Ramp=False):
     """Compute PNS from gradient waveforms using the differentiable safe_gwf_to_pns_torch.
-    
+
     gx, gy: (timesteps,) torch tensors of gradient waveforms in mT/m
     dt: time step size in ms
     Ramp: if True add ramp up/down, otherwise use only the repeated waveform
-    
+
     Returns:
         pns_x, pns_y, pns_norm, t_pns
     """
     device = gx.device
     dtype = gx.dtype
-
-    dt_seconds = dt / 1000  # Convert ms → s
 
     # Repeat waveform for spectral resolution
     full_ro_x = gx.repeat(specRes)
@@ -661,25 +664,23 @@ def compute_pns_from_gradients(hw, gx, gy, dt, gradPreEmphPts=10, specRes=325, R
     rfVec = torch.ones(len(gVec), device=device, dtype=dtype)
 
     # Compute PNS
-    _, res = safe_gwf_to_pns.safe_gwf_to_pns_torch(
-        gVec, rfVec, dt_seconds, hw, do_padding=False
-    )
+    _, res = safe_gwf_to_pns.safe_gwf_to_pns_torch(gVec, rfVec, dt, hw)
 
-    pns_x = res['pns'][:, 0]
-    pns_y = res['pns'][:, 1]
-    pns_norm = torch.norm(res['pns'], dim=1)
+    pns_x = res["pns"][:, 0]
+    pns_y = res["pns"][:, 1]
+    pns_norm = torch.norm(res["pns"], dim=1)
 
-    t_pns = torch.arange(len(res['pns']), device=device, dtype=dtype) * dt_seconds * 1000  # ms
+    t_pns = torch.arange(len(res["pns"]), device=device, dtype=dtype) * dt  # ms
 
     return pns_x, pns_y, pns_norm, t_pns
 
 
 def compute_fast_pns_from_gradients(hw, gx, gy, dt):
     """Compute PNS from gradient waveforms using the fast FFT-based method
-    
+
     gx, gy: (timesteps,) torch tensors of gradient waveforms in mT/m
     dt: time step size in ms
-    
+
     Returns:
         pns_x, pns_y, pns_norm, t_pns
     """
@@ -696,15 +697,13 @@ def compute_fast_pns_from_gradients(hw, gx, gy, dt):
     rfVec = torch.ones(len(gVec), device=device, dtype=dtype)
 
     # Compute PNS
-    _, res = safe_gwf_to_pns.fft_gwf_to_pns_torch(
-        gVec, rfVec, dt_seconds, hw
-    )
+    _, res = safe_gwf_to_pns.fft_gwf_to_pns_torch(gVec, rfVec, dt_seconds, hw)
 
-    pns_x = res['pns'][:, 0]
-    pns_y = res['pns'][:, 1]
-    pns_norm = torch.norm(res['pns'], dim=1)
+    pns_x = res["pns"][:, 0]
+    pns_y = res["pns"][:, 1]
+    pns_norm = torch.norm(res["pns"], dim=1)
 
-    t_pns = torch.arange(len(res['pns']), device=device, dtype=dtype) * dt_seconds * 1000  # ms
+    t_pns = torch.arange(len(res["pns"]), device=device, dtype=dtype) * dt_seconds * 1000  # ms
 
     return pns_x, pns_y, pns_norm, t_pns
 
@@ -765,10 +764,10 @@ def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=Tru
     ax[1, 2].axis("off")
     fig.colorbar(im6, ax=ax[1, 2])
 
-    #im5 = ax[1, 1].semilogy(range(len(losses)), losses, linewidth=0.7)
-    #ax[1, 1].set_title("Loss")
+    # im5 = ax[1, 1].semilogy(range(len(losses)), losses, linewidth=0.7)
+    # ax[1, 1].set_title("Loss")
 
-    #im6 = ax[1, 0].plot(traj[:, 0].detach().cpu().numpy(), traj[:, 1].detach().cpu().numpy(), linewidth=0.7, marker=".", markersize=3)
+    # im6 = ax[1, 0].plot(traj[:, 0].detach().cpu().numpy(), traj[:, 1].detach().cpu().numpy(), linewidth=0.7, marker=".", markersize=3)
     x_data = traj[:, 0].detach().cpu().numpy()
     y_data = traj[:, 1].detach().cpu().numpy()
     im4 = ax[1, 0].plot(x_data, y_data, linewidth=0.7, marker=".", markersize=3)
@@ -784,16 +783,14 @@ def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=Tru
     cross_style = {"color": "red", "linestyle": "-", "linewidth": 1.2, "alpha": 0.8}
     ax[1, 0].plot([cross_x_min, cross_x_max], [y_center, y_center], **cross_style)
     ax[1, 0].plot([x_center, x_center], [cross_y_min, cross_y_max], **cross_style)
-    text_style = {"color": "red", "fontsize": 9, "fontweight": "bold", 
-                "bbox": dict(facecolor='white', alpha=0.6, edgecolor='none', pad=1)}
-    ax[1, 0].text(cross_x_min, y_center, f'{x_min:.3f}', ha='right', va='center', **text_style)
-    ax[1, 0].text(cross_x_max, y_center, f'{x_max:.3f}', ha='left', va='center', **text_style)
-    ax[1, 0].text(x_center, cross_y_min, f'{y_min:.3f}', ha='center', va='top', **text_style)
-    ax[1, 0].text(x_center, cross_y_max, f'{y_max:.3f}', ha='center', va='bottom', **text_style)
-    ax[1, 0].text(x_center, y_center, 'max', ha='center', va='center', color='red', fontweight='bold', bbox=dict(facecolor='white', alpha=1.0, edgecolor='none', pad=2))
+    text_style = {"color": "red", "fontsize": 9, "fontweight": "bold", "bbox": dict(facecolor="white", alpha=0.6, edgecolor="none", pad=1)}
+    ax[1, 0].text(cross_x_min, y_center, f"{x_min:.3f}", ha="right", va="center", **text_style)
+    ax[1, 0].text(cross_x_max, y_center, f"{x_max:.3f}", ha="left", va="center", **text_style)
+    ax[1, 0].text(x_center, cross_y_min, f"{y_min:.3f}", ha="center", va="top", **text_style)
+    ax[1, 0].text(x_center, cross_y_max, f"{y_max:.3f}", ha="center", va="bottom", **text_style)
+    ax[1, 0].text(x_center, y_center, "max", ha="center", va="center", color="red", fontweight="bold", bbox=dict(facecolor="white", alpha=1.0, edgecolor="none", pad=2))
 
     ax[1, 0].set_title(f"Trajectory. Slew Rate: {slew_rate.abs().max().detach().item():.2f}")
-
 
     if export and export_path is not None:
         os.makedirs(export_path, exist_ok=True)
@@ -817,7 +814,7 @@ def export_k_as_csv(traj, path):
 def psf(reconstructor, fft_template, rosette_init, rosette_final, device, export_path):
     """
     Computes, compares, and plots the Point Spread Function (PSF) for the initial and final trajectories.
-    
+
     Args:
         reconstructor: The ImageRecon object used to reconstruct the images.
         fft_template: A tensor with the same shape as your k-space data (used to generate the ones).
@@ -826,67 +823,67 @@ def psf(reconstructor, fft_template, rosette_init, rosette_final, device, export
         device: The PyTorch device (CPU or CUDA).
         export_path: The directory string where the plots will be saved.
     """
-    
+
     with torch.no_grad():
         # Point-like image
         fft_ones = torch.ones_like(fft_template, dtype=torch.complex64, device=device)
-        
+
         # Reconstruct the PSF
         psf_init = reconstructor.reconstruct_img(fft_ones, rosette_init, method="kbnufft")
         psf_final = reconstructor.reconstruct_img(fft_ones, rosette_final, method="kbnufft")
-        
+
         # Move to CPU for plotting
         psf_init_np = psf_init.abs().cpu().numpy()
         psf_final_np = psf_final.abs().cpu().numpy()
-        
+
         # Normalization
         psf_init_np /= psf_init_np.max()
         psf_final_np /= psf_final_np.max()
-        
+
         # log scale to visualize side-lobes
         epsilon = 1e-7
         psf_init_log = np.log10(psf_init_np + epsilon)
         psf_final_log = np.log10(psf_final_np + epsilon)
-        
+
         # Center index for 1D profiles
         center_idx = psf_init_np.shape[0] // 2
-        
+
         fig, axs = plt.subplots(2, 3, figsize=(24, 8))
-        
+
         # --- Linear Scale ---
-        im0 = axs[0, 0].imshow(psf_init_np, cmap='gist_gray')
+        im0 = axs[0, 0].imshow(psf_init_np, cmap="gist_gray")
         axs[0, 0].set_title("Initial PSF")
         fig.colorbar(im0, ax=axs[0, 0])
-        
-        im1 = axs[0, 1].imshow(psf_final_np, cmap='gist_gray')
+
+        im1 = axs[0, 1].imshow(psf_final_np, cmap="gist_gray")
         axs[0, 1].set_title("Final PSF")
         fig.colorbar(im1, ax=axs[0, 1])
-        
+
         axs[0, 2].plot(psf_init_np[center_idx, :], label="Initial PSF", alpha=0.8)
         axs[0, 2].plot(psf_final_np[center_idx, :], label="Final Optimized PSF", alpha=0.8)
         axs[0, 2].set_title("PSF Profile (Linear)")
         axs[0, 2].set_xlabel("Pixel")
         axs[0, 2].set_ylabel("PSF (A.U.)")
         axs[0, 2].legend()
-        axs[0, 2].grid(True, linestyle='--', alpha=0.6)
-        
+        axs[0, 2].grid(True, linestyle="--", alpha=0.6)
+
         # --- Log Scale ---
-        im2 = axs[1, 0].imshow(psf_init_log, cmap='gist_gray', vmin=-3, vmax=0)
+        im2 = axs[1, 0].imshow(psf_init_log, cmap="gist_gray", vmin=-3, vmax=0)
         axs[1, 0].set_title("Initial PSF (Log scale)")
         fig.colorbar(im2, ax=axs[1, 0])
-        
-        im3 = axs[1, 1].imshow(psf_final_log, cmap='gist_gray', vmin=-3, vmax=0)
+
+        im3 = axs[1, 1].imshow(psf_final_log, cmap="gist_gray", vmin=-3, vmax=0)
         axs[1, 1].set_title("Final PSF (Log scale)")
         fig.colorbar(im3, ax=axs[1, 1])
-        
+
         axs[1, 2].plot(psf_init_log[center_idx, :], label="Initial PSF (Log)", alpha=0.8)
         axs[1, 2].plot(psf_final_log[center_idx, :], label="Final Optimized PSF (Log)", alpha=0.8)
         axs[1, 2].set_title("PSF Profile (Log scale)")
         axs[1, 2].set_xlabel("Pixel")
         axs[1, 2].set_ylabel("Log10(PSF)")
         axs[1, 2].legend()
-        axs[1, 2].grid(True, linestyle='--', alpha=0.6)
-        
+        axs[1, 2].grid(True, linestyle="--", alpha=0.6)
+
         plt.tight_layout()
         os.makedirs(export_path, exist_ok=True)
         plt.savefig(os.path.join(export_path, "psf.png"), dpi=300)
