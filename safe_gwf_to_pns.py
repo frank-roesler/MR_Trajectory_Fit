@@ -1,6 +1,8 @@
+import math
 import torch
 import matplotlib.pyplot as plt
 import safe_hw_from_asc
+from torch.fft import rfft, irfft
 
 from params import *
 
@@ -86,7 +88,6 @@ def safe_tau_lowpass_torch(dgdt: torch.Tensor, tau: float, dt: float) -> torch.T
     dgdt: (time,)
     tau: time constant in ms
     dt: sampling interval in ms
-    eta: estimated stop time
     """
 
     alpha = dt / (tau + dt)
@@ -111,6 +112,7 @@ def safe_pns_model_torch(dgdt: torch.Tensor, dt: float, hw_axis: dict) -> torch.
     lp3 = safe_tau_lowpass_torch(dgdt, hw_axis['tau3'], dt_ms)
     stim3 = hw_axis['a3'] * torch.abs(lp3)
     stim = (stim1 + stim2 + stim3) / hw_axis['stim_thresh'] * hw_axis['g_scale'] * 100.0
+
     return stim
 
 
@@ -171,137 +173,159 @@ def safe_gwf_to_pns_torch(gwf: torch.Tensor, rf: torch.Tensor, dt: float, hw: di
     return pns, res
 
 
+def fp_from_one_Gamma_period(dgdt: torch.Tensor, tau: float, dt: float) -> torch.Tensor:
+    """
+    Computes the periodic part f_p using only a single period of Gamma (dgdt).
+    Based on the formula: f_p = 1 / (tau*(1 - e^{-T/tau})) * F^-1( F(Gamma) * F(e^{-t/tau}) )
+    
+    Args:
+        dgdt: (time,) tensor of real values
+        tau: time constant in ms
+        dt: sampling interval in ms
+    """
+    N = len(dgdt)
+    T = dt * N 
+    t = torch.arange(N, device=dgdt.device) * dt
+    
+    const = dt / (tau * (1 - math.exp(-T / tau)))
+    decay = torch.exp(-t / tau)
+
+    # rfft/irfft to maximize memory efficiency and ensure a purely real output.
+    fw = const * irfft(rfft(dgdt) * rfft(decay), n=N)
+
+    return fw
+
+
+def fft_pns_model_torch(dgdt: torch.Tensor, dt: float, hw_axis: dict) -> torch.Tensor:
+
+    dt_ms = dt * 1000.0  # convert to ms
+
+    lp1 = fp_from_one_Gamma_period(dgdt, hw_axis['tau1'], dt_ms)
+    stim1 = hw_axis['a1'] * torch.abs(lp1)
+    lp2 = fp_from_one_Gamma_period(torch.abs(dgdt), hw_axis['tau2'], dt_ms)
+    stim2 = hw_axis['a2'] * lp2
+    lp3 = fp_from_one_Gamma_period(dgdt, hw_axis['tau3'], dt_ms)
+    stim3 = hw_axis['a3'] * torch.abs(lp3)
+    stim = (stim1 + stim2 + stim3) / hw_axis['stim_thresh'] * hw_axis['g_scale'] * 100.0
+
+    return stim
+
+
+def fft_gwf_to_pns_torch(gwf: torch.Tensor, rf: torch.Tensor, dt: float, hw: dict,) -> torch.Tensor:
+    gwf = gwf.to(torch.float32)
+    rf = rf.to(torch.float32)
+
+    safe_hw_check(hw)
+
+    dgdt = (gwf[1:] - gwf[:-1]) / dt
+
+    # PNS calculation
+    pns_x = fft_pns_model_torch(dgdt[:, 0], dt, hw["x"])
+    pns_y = fft_pns_model_torch(dgdt[:, 1], dt, hw["y"])
+    pns_z = fft_pns_model_torch(dgdt[:, 2], dt, hw["z"])
+    pns = torch.stack([pns_x, pns_y, pns_z], dim=1)
+
+    res = {
+        'pns': pns,
+        'gwf': gwf,
+        'rf': rf,
+        'dgdt': dgdt,
+        'dt': dt,
+        'hw': hw
+    }
+    return pns, res
+
+
 # Example usage
 if __name__ == "__main__":
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    import torch
+    import json
+    import numpy as np
+    import matplotlib.pyplot as plt
     
-    # 1. Load Hardware
-    try:
-        hw = safe_hw_from_asc.safe_hw_from_asc('safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc')
-    except:
-        hw = safe_example_hw()
+    from utils_3 import compute_pns_from_gradients, compute_fast_pns_from_gradients
+    
+    import safe_hw_from_asc
 
-    # 2. Data
-    dt = 1e-3
-    raw_data = torch.tensor([
-        [ 0,         0,         0],
-        [-0.2005,    0.9334,    0.3029],
-        [-0.2050,    0.9324,    0.3031],
-        [-0.2146,    0.9302,    0.3032],
-        [-0.2313,    0.9263,    0.3030],
-        [-0.2589,    0.9193,    0.3019],
-        [-0.3059,    0.9060,    0.2980],
-        [-0.3892,    0.8767,    0.2883],
-        [-0.3850,    0.7147,    0.3234],
-        [-0.3687,    0.5255,    0.3653],
-        [-0.3509,    0.3241,    0.4070],
-        [-0.3323,    0.1166,    0.4457],
-        [-0.3136,   -0.0906,    0.4783],
-        [-0.2956,   -0.2913,    0.5019],
-        [-0.2790,   -0.4793,    0.5139],
-        [-0.2642,   -0.6491,    0.5118],
-        [-0.2518,   -0.7957,    0.4939],
-        [-0.2350,   -0.8722,    0.4329],
-        [-0.2187,   -0.9111,    0.3541],
-        [-0.2063,   -0.9409,    0.2747],
-        [-0.1977,   -0.9627,    0.1933],
-        [-0.1938,   -0.9768,    0.1080],
-        [-0.1967,   -0.9820,    0.0159],
-        [-0.2114,   -0.9751,   -0.0883],
-        [-0.2292,   -0.9219,   -0.2150],
-        [-0.2299,   -0.8091,   -0.3561],
-        [-0.2290,   -0.6748,   -0.5011],
-        [-0.2253,   -0.5239,   -0.6460],
-        [-0.2178,   -0.3620,   -0.7868],
-        [-0.2056,   -0.1948,   -0.9194],
-        [-0.1391,   -0.0473,   -0.9908],
-        [-0.0476,    0.0607,   -0.9987],
-        [ 0.0215,    0.1452,   -0.9909],
-        [ 0.0725,    0.2136,   -0.9759],
-        [ 0.1114,    0.2709,   -0.9579],
-        [ 0.1426,    0.3204,   -0.9383],
-        [ 0.1690,    0.3641,   -0.9177],
-        [ 0,         0,         0],
-        [ 0,         0,         0],
-        [ 0,         0,         0],
-        [ 0,         0,         0],
-        [ 0,         0,         0],
-        [ 0,         0,         0],
-        [ 0,         0,         0],
-        [-0.3734,   -0.1768,    0.9125],
-        [-0.3825,   -0.2310,    0.8965],
-        [-0.3919,   -0.2895,    0.8752],
-        [-0.4015,   -0.3543,    0.8465],
-        [-0.4108,   -0.4290,    0.8065],
-        [-0.4182,   -0.5202,    0.7469],
-        [-0.4178,   -0.6423,    0.6451],
-        [-0.3855,   -0.8173,    0.4321],
-        [-0.3110,   -0.9418,    0.1401],
-        [-0.2526,   -0.9669,   -0.0674],
-        [-0.2100,   -0.9541,   -0.2213],
-        [-0.1766,   -0.9227,   -0.3474],
-        [-0.1491,   -0.8788,   -0.4570],
-        [-0.1258,   -0.8239,   -0.5555],
-        [-0.1056,   -0.7583,   -0.6459],
-        [-0.0882,   -0.6809,   -0.7293],
-        [-0.0734,   -0.5900,   -0.8061],
-        [-0.0615,   -0.4830,   -0.8753],
-        [-0.0533,   -0.3556,   -0.9349],
-        [-0.0506,   -0.2005,   -0.9801],
-        [-0.0575,   -0.0019,   -1.0000],
-        [-0.0909,    0.2976,   -0.9521],
-        [-0.3027,    0.9509,   -0.0860],
-        [-0.2737,    0.9610,   -0.0692],
-        [-0.2524,    0.9675,   -0.0596],
-        [-0.2364,    0.9719,   -0.0533],
-        [-0.2245,    0.9749,   -0.0490],
-        [-0.2158,    0.9770,   -0.0459],
-        [-0.2097,    0.9785,   -0.0439],
-        [-0.2058,    0.9794,   -0.0426],
-        [-0.2039,    0.9798,   -0.0420],
-        [ 0,         0,         0]
-    ], device=device)
+    # Setup Device and Hardware
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    hw = safe_hw_from_asc.safe_hw_from_asc('safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc')
 
-    gwf_input = 0.08 * raw_data
-    rf_input = torch.ones(len(gwf_input), device=device)
-    rf_input[40:] = -1
+    # Load Data from JSON
+    json_path = 'results/2026-03-10_12-33/traj_data.json'
+    with open(json_path, 'r') as f:
+        data = json.load(f)
 
-    # 3. Run
-    pns, res = safe_gwf_to_pns_torch(gwf_input, rf_input, dt, hw)
+    gx_list = data['trj']['Gx'][0]
+    gy_list = data['trj']['Gy'][0]
+    
+    gx_max = data['trj']['GxMax'][0]
+    gy_max = data['trj']['GyMax'][0]
+    
+    gx = [val * gx_max for val in gx_list]
+    gy = [val * gy_max for val in gy_list]
 
-    gwf_plot = res['gwf']
-    pns_plot = res['pns']
-    rf_plot  = res['rf']
+    dt_ms = 0.005 # ms
+    gx = torch.tensor(gx, device=device, dtype=torch.float32)
+    gy = torch.tensor(gy, device=device, dtype=torch.float32)
+    
+    num_steps = len(gx)
+    period_ms = num_steps * dt_ms
+    t = torch.arange(num_steps, device=device) * dt_ms
+    print(f"Loaded trajectory: dt = {dt_ms:.4f} ms, period = {period_ms:.2f} ms, steps = {num_steps}")
 
-    t_gwf = torch.arange(len(gwf_plot), device=device) * dt * 1000
-    t_pns = torch.arange(len(pns_plot), device=device) * dt * 1000
 
-    gwf_plot = gwf_plot[:-1, :]
-    rf_plot = rf_plot[:-1]
-    t_gwf = t_gwf[:-1]
+    # Standard PNS Computation (Time-Domain)
+    specRes = 325 
+    pns_x_std, pns_y_std, pns_norm_std, t_pns_std = compute_pns_from_gradients(
+        hw, gx, gy, dt_ms, specRes=specRes, Ramp=False
+    )
+    
 
-    fig, (ax1, ax2) = plt.subplots(2,1,sharex=True, figsize=(10,10))
+    # Fast PNS Computation (FFT-Based)
+    pns_x_fast, pns_y_fast, pns_norm_fast, t_pns_fast = compute_fast_pns_from_gradients(
+        gx, gy, dt_ms, hw
+    )
 
-    ax1.plot(t_gwf.cpu(), gwf_plot[:,0].cpu()*1000, label='Gx', color='r')
-    ax1.plot(t_gwf.cpu(), gwf_plot[:,1].cpu()*1000, label='Gy', color='g')
-    ax1.plot(t_gwf.cpu(), gwf_plot[:,2].cpu()*1000, label='Gz', color='b')
-    ax1.set_ylabel('Gradient [mT/m]')
-    ax1.set_title('Gradient Waveforms')
+    max_pns_std = pns_norm_std.max()
+    max_pns_fast = pns_norm_fast.max()
+
+    # Plotting
+    fig = plt.figure(figsize=(14, 8))
+
+    # --- Plot 1: Input Gradients ---
+    ax0 = plt.subplot2grid((2, 2), (0, 0), colspan=2)
+    ax0.plot(t.cpu(), gx.cpu(), label='Gx', color='r', linewidth=2)
+    ax0.plot(t.cpu(), gy.cpu(), label='Gy', color='g', linewidth=2)
+    ax0.set_ylabel('Gradient [mT/m]')
+    ax0.set_xlabel('Time [ms]')
+    ax0.set_title('Input Gradient Waveforms (1 Period)')
+    ax0.grid(True, linestyle='--', alpha=0.6)
+    ax0.legend(loc='upper right')
+
+    # --- Plot 2: Standard PNS Computation ---
+    ax1 = plt.subplot2grid((2, 2), (1, 0))
+    ax1.plot(t_pns_std.cpu(), pns_x_std.cpu(), label='PNS x', color='r')
+    ax1.plot(t_pns_std.cpu(), pns_y_std.cpu(), label='PNS y', color='g')
+    ax1.plot(t_pns_std.cpu(), pns_norm_std.cpu(), label='PNS Norm', color='k', linestyle='--')
+    ax1.set_ylabel('Stimulation [%]')
+    ax1.set_xlabel('Time [ms]')
+    ax1.set_title('Cutoff-Based PNS, max {:.2f}%'.format(max_pns_std))
     ax1.grid(True, linestyle='--', alpha=0.6)
     ax1.legend(loc='upper right')
-    ax1_rf = ax1.twinx()
-    ax1_rf.plot(t_gwf.cpu(), rf_plot.cpu(), color='k', linestyle=':', alpha=0.3, label='RF')
-    ax1_rf.set_ylabel('RF State')
 
-    ax2.plot(t_pns.cpu(), pns_plot[:,0].cpu(), label='PNS x', color='r', linestyle='--')
-    ax2.plot(t_pns.cpu(), pns_plot[:,1].cpu(), label='PNS y', color='g', linestyle='--')
-    ax2.plot(t_pns.cpu(), pns_plot[:,2].cpu(), label='PNS z', color='b', linestyle='--')
+    # --- Plot 3: Fast FFT PNS Computation ---
+    ax2 = plt.subplot2grid((2, 2), (1, 1))
+    ax2.plot(t_pns_fast.cpu(), pns_x_fast.cpu(), label='PNS x', color='r', linewidth=2)
+    ax2.plot(t_pns_fast.cpu(), pns_y_fast.cpu(), label='PNS y', color='g', linewidth=2)
+    ax2.plot(t_pns_fast.cpu(), pns_norm_fast.cpu(), label='PNS Norm', color='k', linestyle='--', linewidth=2)
     ax2.set_ylabel('Stimulation [%]')
     ax2.set_xlabel('Time [ms]')
-    ax2.set_title('Peripheral Nerve Stimulation (PNS)')
+    ax2.set_title('Fast FFT-Based PNS, max {:.2f}%'.format(max_pns_fast))
     ax2.grid(True, linestyle='--', alpha=0.6)
     ax2.legend(loc='upper right')
 
     plt.tight_layout()
-    plt.savefig("pns_example_plot.png")
+    plt.savefig("pns_fft_vs_std_comparison.png", dpi=300)
     plt.show()

@@ -5,12 +5,13 @@ from utils_3 import (
     Checkpointer,
     compute_gradients_from_traj,
     compute_pns_from_gradients,
+    compute_fast_pns_from_gradients,
     get_phantom,
     make_rosette,
     final_plots,
     get_rotation_matrix,
-    get_device
-
+    get_device,
+    psf
 )
 import matplotlib.pyplot as plt
 from mirtorch.linear import FFTCn
@@ -42,25 +43,28 @@ checkpointer = Checkpointer(export_path, params, dt)
 
 with torch.no_grad():
     rosette, _, _ = make_rosette(model(t), rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
+    rosette_init = rosette.clone().to(device) # for later PSF analysis
     initial_recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
 
 # Hardware specs uploaded only once
 hw = safe_hw_from_asc.safe_hw_from_asc('safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc')
 
-for step in range(500): # or params["train_steps"]
-    print(f"Step {step}...", flush=True)
+#for step in range(params["train_steps"]):
+for step in range(50):
     traj = model(t)  # (timesteps, 2)
     rosette, *derivatives = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
 
     # Compute PNS from gradients - fully differentiable
     gx, gy, t_axis = compute_gradients_from_traj(traj, dt, params["gamma"])
-    pns_x, pns_y, pns_norm, t_pns = compute_pns_from_gradients(hw, gx, gy, dt)
+    pns_x, pns_y, pns_norm, t_pns = compute_fast_pns_from_gradients(hw, gx, gy, dt)
     max_pns = pns_norm.max() 
 
     # Losses
+    #pns_loss = loss_fcns.pns_loss(max_pns, params, mode=args.pns_mode, delta=1)
     pns_loss = loss_fcns.pns_loss(max_pns, params, mode="exp")
-    grad_loss, slew_loss = loss_fcns.grad_slew_loss(*derivatives, params, mode="exp")
+    #grad_loss, slew_loss = loss_fcns.grad_slew_loss(*derivatives, params, grad_mode="exp", slew_mode=args.slew_mode, delta=1)
+    grad_loss, slew_loss = loss_fcns.grad_slew_loss(*derivatives, params, grad_mode="exp", slew_mode="exp")
     image_loss = loss_fcns.loss_fn(recon, phantom)
     total_loss = image_loss + grad_loss + slew_loss + pns_loss
 
@@ -82,3 +86,5 @@ plotter.export_figure(export_path)
 
 recon_mirtorch = reconstructor.reconstruct_img(fft, rosette, method="mirtorch")
 final_plots(phantom, recon_mirtorch, initial_recon, plotter.total_losses, traj, slew_rate, export=True, export_path=export_path + "/mirtorch")
+
+psf(reconstructor, fft, rosette_init, rosette, device, export_path)
