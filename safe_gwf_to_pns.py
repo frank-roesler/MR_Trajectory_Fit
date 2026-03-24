@@ -92,7 +92,7 @@ class SAFE_PNS:
         return stim
 
     def safe_gwf_to_pns(self, gwf: torch.Tensor):
-        dgdt = torch.gradient(gwf, spacing=self.dt / 1000, dim=0)[0]
+        dgdt = torch.gradient(gwf, spacing=self.dt, dim=0)[0]
         if self.mode == "plateau":
             pns_x = self.fft_pns_plateau(dgdt[:, 0], self.hw["x"])
             pns_y = self.fft_pns_plateau(dgdt[:, 1], self.hw["y"])

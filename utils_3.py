@@ -669,10 +669,6 @@ def compute_pns_from_gradients(safe_model, gx, gy, gradPreEmphPts=10, specRes=32
         gVecX = full_ro_x
         gVecY = full_ro_y
 
-    # Convert mT/m in T/m
-    gVecX = gVecX * 1e-3
-    gVecY = gVecY * 1e-3
-
     gVecZ = torch.zeros_like(gVecX)
     gVec = torch.stack([gVecX, gVecY, gVecZ], dim=1)  # (time, 3)
 

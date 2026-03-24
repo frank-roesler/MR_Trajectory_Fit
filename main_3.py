@@ -42,7 +42,6 @@ reconstructor = ImageRecon(params, kmax_img, normalization, dcfnet="unet")  # k-
 plotter = TrainPlotter(params, fft, reconstructor, phantoms, loss_fcns.loss_fn, optimizer)
 checkpointer = Checkpointer(export_path, params, dt)
 safe_model = SAFE_PNS(dt=dt, hw_path="safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc", mode="full")
-slew_rate = torch.zeros(1, 2, device=device)
 best_rosette = None  # for PSF analysis at the end
 best_traj = None
 best_slew_rate = None
