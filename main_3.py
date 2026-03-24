@@ -5,7 +5,6 @@ from utils_3 import (
     Checkpointer,
     compute_gradients_from_traj,
     compute_pns_from_gradients,
-    get_phantom,
     get_batch_of_phantoms,
     make_rosette,
     final_plots,
@@ -25,7 +24,7 @@ torch.set_printoptions(threshold=100000)
 device = get_device()
 
 batch_size = 2
-phantoms = get_batch_of_phantoms(batch_size, size=(params["img_size"], params["img_size"]), type="glpu").to(device)
+phantoms = get_batch_of_phantoms(batch_size, size=(params["img_size"], params["img_size"]), type="glpu", padding=params["img_size"]).to(device)
 Fop = FFTCn(phantoms.shape[-2:], phantoms.shape[-2:], (0, 1), norm=None)
 fft = torch.stack([Fop * phantoms[b] for b in range(batch_size)], dim=0)  # Image -> k-space
 fft = fft.unsqueeze(1)

@@ -44,8 +44,8 @@ class ImageRecon:
 
     def sample_k_space_values(self, fft, rosette):
         rosette = rosette.reshape(1, 1, rosette.shape[0], 2)
-        sampled_r = F.grid_sample(fft.real.detach(), rosette / self.kmax_img, mode="bilinear", align_corners=True)
-        sampled_i = F.grid_sample(fft.imag.detach(), rosette / self.kmax_img, mode="bilinear", align_corners=True)
+        sampled_r = F.grid_sample(fft.real.detach(), rosette / self.kmax_img, mode="bicubic", align_corners=True)
+        sampled_i = F.grid_sample(fft.imag.detach(), rosette / self.kmax_img, mode="bicubic", align_corners=True)
         sampled = torch.complex(sampled_r, sampled_i).squeeze(0)
         if self.zero_filling:
             sampled[:, :, -2:] *= 0
@@ -61,7 +61,7 @@ class ImageRecon:
         if method == "mirtorch":
             return self.reconstruct_img_mirtorch(rosette, sampled)
         if method == "kbnufft":
-            return self.reconstruct_img_kbnufft(rosette, sampled)
+            return self.reconstruct_img_dcfnet(rosette, sampled)
         return self.reconstruct_img_nudft(rosette, sampled)
 
     def reconstruct_img_mirtorch(self, rosette, sampled):
@@ -74,7 +74,7 @@ class ImageRecon:
         I0 = torch.flip(torch.rot90(I0.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
         return I0 * self.normalization
 
-    def reconstruct_img_kbnufft(self, rosette, sampled):
+    def reconstruct_img_dcfnet(self, rosette, sampled):
         rosette = rosette.squeeze().permute(1, 0) / self.kmax_img * torch.pi
         sampled = sampled.reshape(1, 1, -1)
         dcf = self.dcfnet(rosette[:, : self.timesteps - 1].unsqueeze(0)).squeeze()
@@ -566,7 +566,7 @@ def get_device():
         return torch.device("cpu")
 
 
-def get_phantom(size=(512, 512), type="shepp_logan"):
+def get_phantom(size=(512, 512), type="shepp_logan", padding=0):
     """Generate a Shepp-Logan phantom as a PyTorch tensor."""
     if type.lower() == "shepp_logan":
         phantom = odl.phantom.shepp_logan(odl.uniform_discr([0, 0], [1, 1], size), modified=True)
@@ -578,13 +578,14 @@ def get_phantom(size=(512, 512), type="shepp_logan"):
         phantom = Image.open("phantom_images/GLPU/GLPU.png").convert("L").resize(size)
         phantom_np = np.array(phantom) / 255.0
     phantom_tensor = torch.from_numpy(phantom_np).float()
-    return phantom_tensor
+    phantom_padded = F.pad(phantom_tensor, (padding, padding, padding, padding))
+    return phantom_padded
 
 
-def get_batch_of_phantoms(batch_size, size=(512, 512), type="shepp_logan"):
+def get_batch_of_phantoms(batch_size, size=(512, 512), type="shepp_logan", padding=0):
     phantoms = []
     for _ in range(batch_size):
-        phantom = get_phantom(size=size, type=type)
+        phantom = get_phantom(size=size, type=type, padding=padding)
         phantoms.append(phantom)
     return torch.stack(phantoms)
 
