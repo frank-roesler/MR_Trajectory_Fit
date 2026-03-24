@@ -16,6 +16,7 @@ from models import DCFNet, UNet1D, FCN1D
 import json
 from os.path import join, dirname
 from scipy.signal import find_peaks
+from mirtorch.linear import FFTCn
 
 
 # import safe_hw_from_asc
@@ -566,7 +567,7 @@ def get_device():
         return torch.device("cpu")
 
 
-def get_phantom(size=(512, 512), type="shepp_logan", padding=0):
+def get_phantom(size=(512, 512), type="shepp_logan"):
     """Generate a Shepp-Logan phantom as a PyTorch tensor."""
     if type.lower() == "shepp_logan":
         phantom = odl.phantom.shepp_logan(odl.uniform_discr([0, 0], [1, 1], size), modified=True)
@@ -578,14 +579,13 @@ def get_phantom(size=(512, 512), type="shepp_logan", padding=0):
         phantom = Image.open("phantom_images/GLPU/GLPU.png").convert("L").resize(size)
         phantom_np = np.array(phantom) / 255.0
     phantom_tensor = torch.from_numpy(phantom_np).float()
-    phantom_padded = F.pad(phantom_tensor, (padding, padding, padding, padding))
-    return phantom_padded
+    return phantom_tensor
 
 
-def get_batch_of_phantoms(batch_size, size=(512, 512), type="shepp_logan", padding=0):
+def get_batch_of_phantoms(batch_size, size=(512, 512), type="shepp_logan"):
     phantoms = []
     for _ in range(batch_size):
-        phantom = get_phantom(size=size, type=type, padding=padding)
+        phantom = get_phantom(size=size, type=type)
         phantoms.append(phantom)
     return torch.stack(phantoms)
 
@@ -937,3 +937,15 @@ def psf(reconstructor, fft_template, rosette_init, rosette_final, device, export
         os.makedirs(export_path, exist_ok=True)
         plt.savefig(os.path.join(export_path, "psf.png"), dpi=300)
         plt.show()
+
+
+def compute_initial_fft(phantoms, padding):
+    Fop_shape = (phantoms.shape[-2] + 2 * padding, phantoms.shape[-1] + 2 * padding)
+    Fop = FFTCn(Fop_shape, Fop_shape, (0, 1), norm=None)
+    ffts = []
+    for b in range(phantoms.shape[0]):
+        phantom_padded = F.pad(phantoms[b], pad=(padding, padding, padding, padding))
+        ffts.append(Fop * phantom_padded)
+    fft = torch.stack(ffts, dim=0)
+    fft = fft.unsqueeze(1)
+    return fft

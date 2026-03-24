@@ -11,9 +11,9 @@ from utils_3 import (
     get_rotation_matrix,
     get_device,
     psf,
+    compute_initial_fft,
 )
 import matplotlib.pyplot as plt
-from mirtorch.linear import FFTCn
 from models import FourierCurve, Ellipse
 import torch
 from params import *
@@ -24,10 +24,8 @@ torch.set_printoptions(threshold=100000)
 device = get_device()
 
 batch_size = 2
-phantoms = get_batch_of_phantoms(batch_size, size=(params["img_size"], params["img_size"]), type="glpu", padding=params["img_size"]).to(device)
-Fop = FFTCn(phantoms.shape[-2:], phantoms.shape[-2:], (0, 1), norm=None)
-fft = torch.stack([Fop * phantoms[b] for b in range(batch_size)], dim=0)  # Image -> k-space
-fft = fft.unsqueeze(1)
+phantoms = get_batch_of_phantoms(batch_size, size=(params["img_size"], params["img_size"]), type="glpu").to(device)
+fft = compute_initial_fft(phantoms, padding=params["img_size"])
 rotation_matrix = get_rotation_matrix(params["n_petals"], device=device).detach()
 t = torch.linspace(0, params["duration"], steps=params["timesteps"], device=device).unsqueeze(1)  # (timesteps, 1)
 
