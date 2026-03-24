@@ -2,144 +2,107 @@ import math
 import torch
 import matplotlib.pyplot as plt
 import safe_hw_from_asc
-from torch.fft import rfft, irfft
-
+from torch.fft import rfft, irfft, fft, ifft, fftfreq
 from params import *
 
 
-def safe_example_hw():
-    """
-    SAFE model parameters for EXAMPLE scanner hardware (not a real scanner).
+class SAFE_PNS:
+    def __init__(self, dt, hw_path, mode="full"):
+        self.hw = safe_hw_from_asc.safe_hw_from_asc(hw_path)
+        self.hw_check()
+        self.dt = dt
+        self.mode = mode
 
-    Returns
-    -------
-    hw : dict
-        Dictionary containing hardware parameters for x, y, and z axes.
-    """
-    hw = {
-        "name": "MP_GPA_EXAMPLE",
-        "checksum": "1234567890",
-        "dependency": "",
-        "x": {"tau1": 0.20, "tau2": 0.03, "tau3": 3.00, "a1": 0.40, "a2": 0.10, "a3": 0.50, "stim_limit": 30.0, "stim_thresh": 24.0, "g_scale": 0.35},
-        "y": {"tau1": 1.50, "tau2": 2.50, "tau3": 0.15, "a1": 0.55, "a2": 0.15, "a3": 0.30, "stim_limit": 15.0, "stim_thresh": 12.0, "g_scale": 0.31},
-        "z": {"tau1": 2.00, "tau2": 0.12, "tau3": 1.00, "a1": 0.42, "a2": 0.40, "a3": 0.18, "stim_limit": 25.0, "stim_thresh": 20.0, "g_scale": 0.25},
-    }
-    return hw
+    def example_hw(self):
+        """
+        SAFE model parameters for EXAMPLE scanner hardware (not a real scanner).
 
+        Returns
+        -------
+        hw : dict
+            Dictionary containing hardware parameters for x, y, and z axes.
+        """
+        hw = {
+            "name": "MP_GPA_EXAMPLE",
+            "checksum": "1234567890",
+            "dependency": "",
+            "x": {"tau1": 0.20, "tau2": 0.03, "tau3": 3.00, "a1": 0.40, "a2": 0.10, "a3": 0.50, "stim_limit": 30.0, "stim_thresh": 24.0, "g_scale": 0.35},
+            "y": {"tau1": 1.50, "tau2": 2.50, "tau3": 0.15, "a1": 0.55, "a2": 0.15, "a3": 0.30, "stim_limit": 15.0, "stim_thresh": 12.0, "g_scale": 0.31},
+            "z": {"tau1": 2.00, "tau2": 0.12, "tau3": 1.00, "a1": 0.42, "a2": 0.40, "a3": 0.18, "stim_limit": 25.0, "stim_thresh": 20.0, "g_scale": 0.25},
+        }
+        return hw
 
-def safe_longest_time_const(hw):
-    taus = []
-    for axis in ["x", "y", "z"]:
-        if axis in hw:
-            taus.extend([hw[axis]["tau1"], hw[axis]["tau2"], hw[axis]["tau3"]])
-    return max(taus)
+    def longest_time_const(self):
+        taus = []
+        for axis in ["x", "y", "z"]:
+            if axis in self.hw:
+                taus.extend([hw[axis]["tau1"], hw[axis]["tau2"], hw[axis]["tau3"]])
+        return max(taus)
 
+    def hw_check(self):
+        for axis in ["x", "y", "z"]:
+            total_a = self.hw[axis]["a1"] + self.hw[axis]["a2"] + self.hw[axis]["a3"]
+            if abs(total_a - 1.0) > 0.001:
+                raise ValueError(f"Hardware specification {axis}: a1+a2+a3 must be equal to 1!")
+        required_params = ["stim_limit", "stim_thresh", "tau1", "tau2", "tau3", "a1", "a2", "a3", "g_scale"]
+        for axis in ["x", "y", "z"]:
+            for param in required_params:
+                if param not in self.hw[axis] or self.hw[axis][param] is None:
+                    raise ValueError(f"Hardware specification {axis}.{param} is empty or missing!")
 
-def safe_hw_check(hw):
-    for axis in ["x", "y", "z"]:
-        total_a = hw[axis]["a1"] + hw[axis]["a2"] + hw[axis]["a3"]
-        if abs(total_a - 1.0) > 0.001:
-            raise ValueError(f"Hardware specification {axis}: a1+a2+a3 must be equal to 1!")
-    required_params = ["stim_limit", "stim_thresh", "tau1", "tau2", "tau3", "a1", "a2", "a3", "g_scale"]
-    for axis in ["x", "y", "z"]:
-        for param in required_params:
-            if param not in hw[axis] or hw[axis][param] is None:
-                raise ValueError(f"Hardware specification {axis}.{param} is empty or missing!")
+    def safe_pns_model_fourier(self, dgdt: torch.Tensor, hw_axis: dict) -> torch.Tensor:
+        tau_tensor = torch.Tensor([hw_axis["tau1"], hw_axis["tau2"], hw_axis["tau3"]]).unsqueeze(0)
+        a_tensor = torch.Tensor([hw_axis["a1"], hw_axis["a2"], hw_axis["a3"]]).unsqueeze(0)
+        pad = dgdt.shape[0] // 2
+        dgdt_padded = torch.nn.functional.pad(dgdt, (pad, pad))
+        dgdt_padded = torch.stack((dgdt_padded, dgdt_padded.abs(), dgdt_padded), dim=1)
+        dgdt_hat = fft(dgdt_padded, dim=0)
+        K = fftfreq(dgdt.shape[0] + 2 * pad, d=self.dt).unsqueeze(1) * 2 * torch.pi
+        lp_hat = dgdt_hat / (1 + 1j * K * tau_tensor)
+        lp = ifft(lp_hat, dim=0)[pad:-pad].real.abs()
+        stim = torch.sum(a_tensor * lp, dim=1) / hw_axis["stim_thresh"] * hw_axis["g_scale"] * 100.0
+        return stim
 
+    def fp_from_one_Gamma_period(self, dgdt: torch.Tensor, tau: float) -> torch.Tensor:
+        """
+        Computes the periodic part f_p using only a single period of Gamma (dgdt).
+        Based on the formula: f_p = 1 / (tau*(1 - e^{-T/tau})) * F^-1( F(Gamma) * F(e^{-t/tau}) )
 
-def safe_pns_model_fourier(dgdt: torch.Tensor, dt: float, hw_axis: dict) -> torch.Tensor:
-    tau_tensor = torch.Tensor([hw_axis["tau1"], hw_axis["tau2"], hw_axis["tau3"]]).unsqueeze(0)
-    a_tensor = torch.Tensor([hw_axis["a1"], hw_axis["a2"], hw_axis["a3"]]).unsqueeze(0)
-    pad = dgdt.shape[0] // 2
-    dgdt_padded = torch.nn.functional.pad(dgdt, (pad, pad))
-    dgdt_padded = torch.stack((dgdt_padded, dgdt_padded.abs(), dgdt_padded), dim=1)
-    dgdt_hat = torch.fft.fft(dgdt_padded, dim=0)
-    K = torch.fft.fftfreq(dgdt.shape[0] + 2 * pad, d=dt).unsqueeze(1) * 2 * torch.pi
-    lp_hat = dgdt_hat / (1 + 1j * K * tau_tensor)
-    lp = torch.fft.ifft(lp_hat, dim=0)[pad:-pad].real.abs()
-    stim = torch.sum(a_tensor * lp, dim=1) / hw_axis["stim_thresh"] * hw_axis["g_scale"] * 100.0
-    return stim
+        Args:
+            dgdt: (time,) tensor of real values
+            tau: time constant in ms
+            dt: sampling interval in ms
+        """
+        N = len(dgdt)
+        T = dt * N
+        t = torch.arange(N, device=dgdt.device) * self.dt
+        const = dt / (tau * (1 - math.exp(-T / tau)))
+        decay = torch.exp(-t / tau)
+        fw = const * irfft(rfft(dgdt) * rfft(decay), n=N)
+        return fw
 
+    def fft_pns_plateau(self, dgdt: torch.Tensor, hw_axis: dict) -> torch.Tensor:
+        lp1 = self.fp_from_one_Gamma_period(dgdt, hw_axis["tau1"], self.dt)
+        stim1 = hw_axis["a1"] * torch.abs(lp1)
+        lp2 = self.fp_from_one_Gamma_period(torch.abs(dgdt), hw_axis["tau2"], self.dt)
+        stim2 = hw_axis["a2"] * lp2
+        lp3 = self.fp_from_one_Gamma_period(dgdt, hw_axis["tau3"], self.dt)
+        stim3 = hw_axis["a3"] * torch.abs(lp3)
+        stim = (stim1 + stim2 + stim3) / hw_axis["stim_thresh"] * hw_axis["g_scale"] * 100.0
+        return stim
 
-def safe_gwf_to_pns_torch(gwf: torch.Tensor, rf: torch.Tensor, dt: float, hw: dict):
-    gwf = gwf.to(torch.float32)
-    rf = rf.to(torch.float32)
-
-    # Hardware check
-    safe_hw_check(hw)
-
-    # Slew rate
-    dgdt = torch.gradient(gwf, spacing=dt / 1000, dim=0)[0]
-
-    # PNS calculation
-    pns_x = safe_pns_model_fourier(dgdt[:, 0], dt, hw["x"])
-    pns_y = safe_pns_model_fourier(dgdt[:, 1], dt, hw["y"])
-    pns_z = safe_pns_model_fourier(dgdt[:, 2], dt, hw["z"])
-    pns = torch.stack([pns_x, pns_y, pns_z], dim=1)
-
-    res = {"pns": pns, "gwf": gwf, "rf": rf, "dgdt": dgdt, "dt": dt, "hw": hw}
-    return pns, res
-
-
-def fp_from_one_Gamma_period(dgdt: torch.Tensor, tau: float, dt: float) -> torch.Tensor:
-    """
-    Computes the periodic part f_p using only a single period of Gamma (dgdt).
-    Based on the formula: f_p = 1 / (tau*(1 - e^{-T/tau})) * F^-1( F(Gamma) * F(e^{-t/tau}) )
-
-    Args:
-        dgdt: (time,) tensor of real values
-        tau: time constant in ms
-        dt: sampling interval in ms
-    """
-    N = len(dgdt)
-    T = dt * N
-    t = torch.arange(N, device=dgdt.device) * dt
-
-    const = dt / (tau * (1 - math.exp(-T / tau)))
-    decay = torch.exp(-t / tau)
-
-    # rfft/irfft to maximize memory efficiency and ensure a purely real output.
-    fw = const * irfft(rfft(dgdt) * rfft(decay), n=N)
-
-    return fw
-
-
-def fft_pns_model_torch(dgdt: torch.Tensor, dt: float, hw_axis: dict) -> torch.Tensor:
-
-    dt_ms = dt * 1000.0  # convert to ms
-
-    lp1 = fp_from_one_Gamma_period(dgdt, hw_axis["tau1"], dt_ms)
-    stim1 = hw_axis["a1"] * torch.abs(lp1)
-    lp2 = fp_from_one_Gamma_period(torch.abs(dgdt), hw_axis["tau2"], dt_ms)
-    stim2 = hw_axis["a2"] * lp2
-    lp3 = fp_from_one_Gamma_period(dgdt, hw_axis["tau3"], dt_ms)
-    stim3 = hw_axis["a3"] * torch.abs(lp3)
-    stim = (stim1 + stim2 + stim3) / hw_axis["stim_thresh"] * hw_axis["g_scale"] * 100.0
-
-    return stim
-
-
-def fft_gwf_to_pns_torch(
-    gwf: torch.Tensor,
-    rf: torch.Tensor,
-    dt: float,
-    hw: dict,
-) -> torch.Tensor:
-    gwf = gwf.to(torch.float32)
-    rf = rf.to(torch.float32)
-
-    safe_hw_check(hw)
-
-    dgdt = (gwf[1:] - gwf[:-1]) / dt
-
-    # PNS calculation
-    pns_x = fft_pns_model_torch(dgdt[:, 0], dt, hw["x"])
-    pns_y = fft_pns_model_torch(dgdt[:, 1], dt, hw["y"])
-    pns_z = fft_pns_model_torch(dgdt[:, 2], dt, hw["z"])
-    pns = torch.stack([pns_x, pns_y, pns_z], dim=1)
-
-    res = {"pns": pns, "gwf": gwf, "rf": rf, "dgdt": dgdt, "dt": dt, "hw": hw}
-    return pns, res
+    def safe_gwf_to_pns(self, gwf: torch.Tensor):
+        dgdt = torch.gradient(gwf, spacing=self.dt / 1000, dim=0)[0]
+        if self.mode == "plateau":
+            pns_x = self.fft_pns_plateau(dgdt[:, 0], self.hw["x"])
+            pns_y = self.fft_pns_plateau(dgdt[:, 1], self.hw["y"])
+            pns_z = self.fft_pns_plateau(dgdt[:, 2], self.hw["z"])
+            return torch.stack([pns_x, pns_y, pns_z], dim=1)
+        else:
+            pns_x = self.safe_pns_model_fourier(dgdt[:, 0], self.hw["x"])
+            pns_y = self.safe_pns_model_fourier(dgdt[:, 1], self.hw["y"])
+            pns_z = self.safe_pns_model_fourier(dgdt[:, 2], self.hw["z"])
+            return torch.stack([pns_x, pns_y, pns_z], dim=1)
 
 
 # Example usage

@@ -17,7 +17,6 @@ import json
 from os.path import join, dirname
 from scipy.signal import find_peaks
 
-import safe_gwf_to_pns
 
 # import safe_hw_from_asc
 
@@ -393,7 +392,7 @@ class TrainPlotter:
         self.total_losses.append(total_loss.detach().item())
         max_pns = pns_norm.max().item()
         self.max_pns_norms.append(max_pns)
-        
+
         if step % 50 == 0:
             # --- Update Recon and Losses (for the image) ---
             recon_mirtorch = self.reconstructor.reconstruct_img(self.fft, rosette, method="mirtorch")
@@ -411,7 +410,7 @@ class TrainPlotter:
             # self.ax_single_losses.autoscale_view()
             self.ax_loss.relim()
             self.ax_loss.autoscale_view()
-            
+
             recon_to_plot = recon[0] if recon.dim() == 3 else recon
             img = recon_to_plot.abs().detach().cpu().numpy()
             self.im_recon.set_data(img)
@@ -638,7 +637,7 @@ def compute_gradients_from_traj(traj, dt, gamma):
     return gx, gy, t_axis
 
 
-def compute_pns_from_gradients(hw, gx, gy, dt, gradPreEmphPts=10, specRes=325, Ramp=False):
+def compute_pns_from_gradients(safe_model, gx, gy, gradPreEmphPts=10, specRes=325, Ramp=False):
     """Compute PNS from gradient waveforms using the differentiable safe_gwf_to_pns_torch.
 
     gx, gy: (timesteps,) torch tensors of gradient waveforms in mT/m
@@ -646,7 +645,7 @@ def compute_pns_from_gradients(hw, gx, gy, dt, gradPreEmphPts=10, specRes=325, R
     Ramp: if True add ramp up/down, otherwise use only the repeated waveform
 
     Returns:
-        pns_x, pns_y, pns_norm, t_pns
+        pns_x, pns_y, pns_norm, t_axis
     """
     device = gx.device
     dtype = gx.dtype
@@ -677,49 +676,14 @@ def compute_pns_from_gradients(hw, gx, gy, dt, gradPreEmphPts=10, specRes=325, R
     gVecZ = torch.zeros_like(gVecX)
     gVec = torch.stack([gVecX, gVecY, gVecZ], dim=1)  # (time, 3)
 
-    rfVec = torch.ones(len(gVec), device=device, dtype=dtype)
-
     # Compute PNS
-    _, res = safe_gwf_to_pns.safe_gwf_to_pns_torch(gVec, rfVec, dt, hw)
+    pns = safe_model.safe_gwf_to_pns(gVec)
 
-    pns_x = res["pns"][:, 0]
-    pns_y = res["pns"][:, 1]
-    pns_norm = torch.norm(res["pns"], dim=1)
+    pns_x = pns[:, 0]
+    pns_y = pns[:, 1]
+    pns_norm = torch.norm(pns, dim=1)
 
-    t_pns = torch.arange(len(res["pns"]), device=device, dtype=dtype) * dt  # ms
-
-    return pns_x, pns_y, pns_norm, t_pns
-
-
-def compute_fast_pns_from_gradients(hw, gx, gy, dt):
-    """Compute PNS from gradient waveforms using the fast FFT-based method
-
-    gx, gy: (timesteps,) torch tensors of gradient waveforms in mT/m
-    dt: time step size in ms
-
-    Returns:
-        pns_x, pns_y, pns_norm, t_pns
-    """
-    device = gx.device
-    dtype = gx.dtype
-
-    dt_seconds = dt / 1000  # Convert ms → s
-
-    gVecX = gx * 1e-3  # Convert mT/m to T/m
-    gVecY = gy * 1e-3
-    gVecZ = torch.zeros_like(gVecX)
-    gVec = torch.stack([gVecX, gVecY, gVecZ], dim=1)  # (time, 3)
-
-    rfVec = torch.ones(len(gVec), device=device, dtype=dtype)
-
-    # Compute PNS
-    _, res = safe_gwf_to_pns.fft_gwf_to_pns_torch(gVec, rfVec, dt_seconds, hw)
-
-    pns_x = res["pns"][:, 0]
-    pns_y = res["pns"][:, 1]
-    pns_norm = torch.norm(res["pns"], dim=1)
-
-    t_pns = torch.arange(len(res["pns"]), device=device, dtype=dtype) * dt_seconds * 1000  # ms
+    t_pns = torch.arange(len(pns), device=device, dtype=dtype) * safe_model.dt  # ms
 
     return pns_x, pns_y, pns_norm, t_pns
 
@@ -828,25 +792,25 @@ def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=Tru
         "color": "red",
         "fontsize": 9,
         "fontweight": "bold",
-        "bbox": dict(facecolor='white', alpha=0.6, edgecolor='none', pad=1),
+        "bbox": dict(facecolor="white", alpha=0.6, edgecolor="none", pad=1),
     }
-    ax_traj.text(cross_x_min, y_center, f'{x_min:.3f}', ha='right', va='center', **text_style)
-    ax_traj.text(cross_x_max, y_center, f'{x_max:.3f}', ha='left', va='center', **text_style)
-    ax_traj.text(x_center, cross_y_min, f'{y_min:.3f}', ha='center', va='top', **text_style)
-    ax_traj.text(x_center, cross_y_max, f'{y_max:.3f}', ha='center', va='bottom', **text_style)
+    ax_traj.text(cross_x_min, y_center, f"{x_min:.3f}", ha="right", va="center", **text_style)
+    ax_traj.text(cross_x_max, y_center, f"{x_max:.3f}", ha="left", va="center", **text_style)
+    ax_traj.text(x_center, cross_y_min, f"{y_min:.3f}", ha="center", va="top", **text_style)
+    ax_traj.text(x_center, cross_y_max, f"{y_max:.3f}", ha="center", va="bottom", **text_style)
     ax_traj.text(
         x_center,
         y_center,
-        'max',
-        ha='center',
-        va='center',
-        color='red',
-        fontweight='bold',
-        bbox=dict(facecolor='white', alpha=1.0, edgecolor='none', pad=2),
+        "max",
+        ha="center",
+        va="center",
+        color="red",
+        fontweight="bold",
+        bbox=dict(facecolor="white", alpha=1.0, edgecolor="none", pad=2),
     )
     ax_traj.set_aspect("equal", adjustable="box")
     ax_traj.set_title(f"Final Trajectory. Slew Rate: {slew_rate.abs().max().detach().item():.2f}")
-    ax_traj.grid(True, linestyle='--', alpha=0.5)
+    ax_traj.grid(True, linestyle="--", alpha=0.5)
     fig_traj.tight_layout()
 
     if export and export_path is not None:
@@ -875,7 +839,7 @@ def export_k_as_csv(traj, path):
 def calculate_fwhm(profile):
     half_max = np.max(profile) / 2.0
     above_half = np.where(profile >= half_max)[0]
-    
+
     return above_half[-1] - above_half[0] + 1
 
 
@@ -890,7 +854,7 @@ def calculate_pslr(profile, distance=10, prominence=None):
     side_lobe_values = np.delete(peak_values, main_lobe_idx_in_peaks)
     max_sidelobe = np.max(side_lobe_values)
     pslr_db = 20 * np.log10(peak_main / max_sidelobe)
-        
+
     return pslr_db
 
 
@@ -930,14 +894,14 @@ def psf(reconstructor, fft_template, rosette_init, rosette_final, device, export
 
         # Center index for 1D profiles
         center_idx = psf_init_np.shape[0] // 2
-        
+
         fig, axs = plt.subplots(2, 3, figsize=(18, 8))
 
         fwhm_init = calculate_fwhm(psf_init_np[center_idx, :])
         fwhm_final = calculate_fwhm(psf_final_np[center_idx, :])
         pslr_init = calculate_pslr(psf_init_np[center_idx, :])
         pslr_final = calculate_pslr(psf_final_np[center_idx, :])
-        
+
         # --- Linear Scale ---
         im0 = axs[0, 0].imshow(psf_init_np, cmap="gist_gray")
         axs[0, 0].set_title("Initial PSF")
@@ -946,7 +910,7 @@ def psf(reconstructor, fft_template, rosette_init, rosette_final, device, export
         im1 = axs[0, 1].imshow(psf_final_np, cmap="gist_gray")
         axs[0, 1].set_title("Final PSF")
         fig.colorbar(im1, ax=axs[0, 1])
-        
+
         axs[0, 2].plot(psf_init_np[center_idx, :], alpha=0.8, label=f"Initial PSF: \nFWHM={fwhm_init:.1f}px, \nPSLR={pslr_init:.1f}dB")
         axs[0, 2].plot(psf_final_np[center_idx, :], alpha=0.8, label=f"Final PSF: \nFWHM={fwhm_final:.1f}px, \nPSLR={pslr_final:.1f}dB")
         axs[0, 2].set_title("PSF Profile (Linear)")
