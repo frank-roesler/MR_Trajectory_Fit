@@ -15,7 +15,7 @@ from mirtorch_pkg import NuSense_om, NuSense
 from models import DCFNet, UNet1D, FCN1D
 import json
 from os.path import join, dirname
-from time import time
+from scipy.signal import find_peaks
 
 import safe_gwf_to_pns
 
@@ -53,6 +53,11 @@ class ImageRecon:
         return rosette, sampled
 
     def reconstruct_img(self, fft, rosette, method="kbnufft"):
+        if fft.dim() == 4 and fft.shape[0] > 1:
+            recons = []
+            for b in range(fft.shape[0]):
+                recons.append(self.reconstruct_img(fft[b : b + 1], rosette, method=method))
+            return torch.stack(recons, dim=0)
         rosette, sampled = self.sample_k_space_values(fft, rosette)
         if method == "mirtorch":
             return self.reconstruct_img_mirtorch(rosette, sampled)
@@ -121,7 +126,21 @@ class MySSIMLoss(nn.Module):
         self.L1_loss = nn.L1Loss()
 
     def forward(self, img, target):
-        loss = 1.0 - self.ssim(img.unsqueeze(0).unsqueeze(0), target.unsqueeze(0).unsqueeze(0)) + 0.1 * self.L1_loss(img, target)
+        if img.dim() == 2:
+            img_ssim = img.unsqueeze(0).unsqueeze(0)
+        elif img.dim() == 3:
+            img_ssim = img.unsqueeze(1)
+        else:
+            img_ssim = img
+
+        if target.dim() == 2:
+            target_ssim = target.unsqueeze(0).unsqueeze(0)
+        elif target.dim() == 3:
+            target_ssim = target.unsqueeze(1)
+        else:
+            target_ssim = target
+
+        loss = 1.0 - self.ssim(img_ssim, target_ssim) + 0.1 * self.L1_loss(img, target)
         return loss
 
 
@@ -241,8 +260,7 @@ class LossCollection:
 
 
 class TrainPlotter:
-    def __init__(self, params, fft, reconstructor, phantom, loss_fn, optimizer):
-        self.time = time()
+    def __init__(self, params, fft, reconstructor, phantoms, loss_fn, optimizer):
         self.best_loss = float("inf")
         self.train_steps = params["train_steps"]
         self.gamma = params["gamma"]
@@ -251,7 +269,7 @@ class TrainPlotter:
 
         self.fft = fft
         self.reconstructor = reconstructor
-        self.phantom = phantom
+        self.phantoms = phantoms
         self.loss_fn = loss_fn
         self.optimizer = optimizer
         plt.rc("xtick", labelsize=8)
@@ -292,7 +310,7 @@ class TrainPlotter:
 
         # --- 2. Reconstructed Image (Top Middle) ---
         im_recon = ax_img.imshow(torch.zeros((params["img_size"], params["img_size"])).numpy(), cmap="gray")
-        ax_img.set_title("Recon (abs)")
+        ax_img.set_title("Recon[0] (abs)")
         ax_img.axis("off")
         self.cbar = self.fig.colorbar(im_recon, ax=ax_img)
 
@@ -373,11 +391,13 @@ class TrainPlotter:
         self.slew_losses.append(slew_loss.detach().item())
         self.pns_losses.append(pns_loss.detach().item())
         self.total_losses.append(total_loss.detach().item())
-
-        if step % 10 == 0:
+        max_pns = pns_norm.max().item()
+        self.max_pns_norms.append(max_pns)
+        
+        if step % 50 == 0:
             # --- Update Recon and Losses (for the image) ---
             recon_mirtorch = self.reconstructor.reconstruct_img(self.fft, rosette, method="mirtorch")
-            image_loss_mirtorch = self.loss_fn(recon_mirtorch, self.phantom)
+            image_loss_mirtorch = self.loss_fn(recon_mirtorch, self.phantoms)
             self.img_losses_mirtorch.append(image_loss_mirtorch.detach().item())
 
             self.img_loss_line_mirtorch.set_data(range(0, 10 * len(self.img_losses_mirtorch), 10), self.img_losses_mirtorch)
@@ -391,8 +411,9 @@ class TrainPlotter:
             # self.ax_single_losses.autoscale_view()
             self.ax_loss.relim()
             self.ax_loss.autoscale_view()
-
-            img = recon.abs().detach().cpu().numpy()
+            
+            recon_to_plot = recon[0] if recon.dim() == 3 else recon
+            img = recon_to_plot.abs().detach().cpu().numpy()
             self.im_recon.set_data(img)
             self.im_recon.set_clim(vmin=0, vmax=img.max())
 
@@ -401,23 +422,13 @@ class TrainPlotter:
             self.ax_traj.relim()
             self.ax_traj.autoscale_view()
 
-            """
-            # --- Update Gradients (New) ---
-            gx, gy, t_axis = compute_gradients_from_traj(traj, self.dt, self.gamma)
-            """
-
             # 4. Plot (convert to numpy for plotting)
             self.gx_line.set_data(t_axis.detach().cpu().numpy(), gx.detach().cpu().numpy())
             self.gy_line.set_data(t_axis.detach().cpu().numpy(), gy.detach().cpu().numpy())
             self.ax_grad.relim()
             self.ax_grad.autoscale_view()
 
-            self.ax_img.set_title(f"Recon (abs) Step {step+1}")
-
-            """
-            # --- Update PNS (New) ---
-            pns_x, pns_y, pns_norm, t_pns = compute_pns_from_gradients(gx, gy, self.dt)
-            """
+            self.ax_img.set_title(f"Recon[0] (abs) Step {step+1}")
 
             # 3. Plot PNS components and norm (convert to numpy for plotting)
             self.pns_x_line.set_data(t_pns.detach().cpu().numpy(), pns_x.detach().cpu().numpy())
@@ -427,9 +438,7 @@ class TrainPlotter:
             self.ax_pns.autoscale_view()
 
             # 4. Track and plot maximum PNS norm over steps
-            max_pns = pns_norm.max().item()
-            self.max_pns_norms.append(max_pns)
-            self.pns_norm_max_line.set_data(range(0, 10 * len(self.max_pns_norms), 10), self.max_pns_norms)
+            self.pns_norm_max_line.set_data(range(len(self.max_pns_norms)), self.max_pns_norms)
             self.ax_pns_norm.relim()
             self.ax_pns_norm.autoscale_view()
 
@@ -450,15 +459,14 @@ class TrainPlotter:
             print(f"  Total loss: {image_loss.detach().item()+grad_loss.detach().item()+slew_loss.detach().item()+pns_loss.detach().item():.6f}")
             print(f"  Best loss: {self.best_loss:.6f}")
             print("-" * 100)
-            print(f"Gradient:{1000 / self.gamma * d_max.max().item():.2f}")
-            print(f"Slew Rate:{1000 / self.gamma * dd_max.max().item():.2f}")
+            print(f"  Gradient: {1000 / self.gamma * d_max.max().item():.2f}")
+            print(f"  Slew Rate: {1000 / self.gamma * dd_max.max().item():.2f}")
             # Handle both tensor and scalar inputs for pns_max
             pns_val = pns_max.item() if torch.is_tensor(pns_max) else pns_max
-            print(f"Max PNS Norm: {pns_val:.2f}%")
-            print(f"Max Gx: {g_x.abs().max().item():.2f} mT/m")
-            print(f"Max Gy: {g_y.abs().max().item():.2f} mT/m")
-            print(f"Time for 10 steps:", time() - self.time)
-            self.time = time()
+            print(f"  Max PNS Norm: {pns_val:.2f}%")
+            print(f"  Max Gx: {g_x.abs().max().item():.2f} mT/m")
+            print(f"  Max Gy: {g_y.abs().max().item():.2f} mT/m")
+
             print("=" * 100)
 
     def export_figure(self, path):
@@ -572,6 +580,14 @@ def get_phantom(size=(512, 512), type="shepp_logan"):
         phantom_np = np.array(phantom) / 255.0
     phantom_tensor = torch.from_numpy(phantom_np).float()
     return phantom_tensor
+
+
+def get_batch_of_phantoms(batch_size, size=(512, 512), type="shepp_logan"):
+    phantoms = []
+    for _ in range(batch_size):
+        phantom = get_phantom(size=size, type=type)
+        phantoms.append(phantom)
+    return torch.stack(phantoms)
 
 
 def get_rotation_matrix(n_petals, device=torch.device("cpu")):
@@ -738,39 +754,64 @@ def plot_pixel_rosette(rosette, fft, img_size, ax=None):
 
 
 def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=True, export=False, export_path=None):
-    fig, ax = plt.subplots(2, 3, figsize=(15, 8))
-    im1 = ax[0, 0].imshow(phantom.detach().cpu().numpy(), cmap="gray")
-    ax[0, 0].set_title("Phantom")
-    ax[0, 0].axis("off")
-    fig.colorbar(im1, ax=ax[0, 0])
+    def _to_batch_3d(x):
+        if x.dim() == 2:
+            return x.unsqueeze(0)
+        if x.dim() == 3:
+            return x
+        if x.dim() == 4 and x.shape[1] == 1:
+            return x[:, 0]
+        raise ValueError(f"Unsupported image tensor shape: {x.shape}")
 
-    im2 = ax[0, 1].imshow(recon.abs().detach().cpu().numpy(), cmap="gray")
-    ax[0, 1].set_title("Recon")
-    ax[0, 1].axis("off")
-    fig.colorbar(im2, ax=ax[0, 1])
+    phantom_b = _to_batch_3d(phantom)
+    recon_b = _to_batch_3d(recon).abs()
+    init_b = _to_batch_3d(initial_recon).abs()
 
-    im3 = ax[0, 2].imshow(initial_recon.squeeze().detach().cpu().numpy(), cmap="gray")
-    ax[0, 2].set_title("Initial Recon")
-    ax[0, 2].axis("off")
-    fig.colorbar(im3, ax=ax[0, 2])
+    n_rows = max(phantom_b.shape[0], recon_b.shape[0], init_b.shape[0])
 
-    im5 = ax[1, 1].imshow((recon.abs() - phantom).detach().cpu().numpy(), cmap="gray")
-    ax[1, 1].set_title("Phantom - Recon")
-    ax[1, 1].axis("off")
-    fig.colorbar(im5, ax=ax[1, 1])
+    if phantom_b.shape[0] == 1 and n_rows > 1:
+        phantom_b = phantom_b.repeat(n_rows, 1, 1)
+    if recon_b.shape[0] == 1 and n_rows > 1:
+        recon_b = recon_b.repeat(n_rows, 1, 1)
+    if init_b.shape[0] == 1 and n_rows > 1:
+        init_b = init_b.repeat(n_rows, 1, 1)
 
-    im6 = ax[1, 2].imshow((initial_recon.abs() - phantom).detach().cpu().numpy(), cmap="gray")
-    ax[1, 2].set_title("Phantom - Initial Recon")
-    ax[1, 2].axis("off")
-    fig.colorbar(im6, ax=ax[1, 2])
+    if not (phantom_b.shape[0] == recon_b.shape[0] == init_b.shape[0]):
+        raise ValueError("Batch dimensions of phantom, recon, and initial_recon are incompatible")
 
-    # im5 = ax[1, 1].semilogy(range(len(losses)), losses, linewidth=0.7)
-    # ax[1, 1].set_title("Loss")
+    fig, ax = plt.subplots(n_rows, 5, figsize=(20, 4 * n_rows))
+    if n_rows == 1:
+        ax = np.expand_dims(ax, axis=0)
 
-    # im6 = ax[1, 0].plot(traj[:, 0].detach().cpu().numpy(), traj[:, 1].detach().cpu().numpy(), linewidth=0.7, marker=".", markersize=3)
+    col_titles = ["Phantom", "Recon", "Phantom - Recon", "Initial Recon", "Phantom - Initial Recon"]
+
+    for r in range(n_rows):
+        phantom_np = phantom_b[r].detach().cpu().numpy()
+        recon_np = recon_b[r].detach().cpu().numpy()
+        init_np = init_b[r].detach().cpu().numpy()
+
+        images = [
+            phantom_np,
+            recon_np,
+            phantom_np - recon_np,
+            init_np,
+            phantom_np - init_np,
+        ]
+
+        for c in range(5):
+            im = ax[r, c].imshow(images[c], cmap="gray")
+            if r == 0:
+                ax[r, c].set_title(col_titles[c])
+            cbar = fig.colorbar(im, ax=ax[r, c], orientation="horizontal", fraction=0.046, pad=0.04)
+            cbar.ax.tick_params(labelsize=6)
+            ax[r, c].axis("off")
+
+    fig.tight_layout()
+
+    fig_traj, ax_traj = plt.subplots(1, 1, figsize=(6, 6))
     x_data = traj[:, 0].detach().cpu().numpy()
     y_data = traj[:, 1].detach().cpu().numpy()
-    im4 = ax[1, 0].plot(x_data, y_data, linewidth=0.7, marker=".", markersize=3)
+    ax_traj.plot(x_data, y_data, linewidth=0.7, marker=".", markersize=3)
     x_min, x_max = x_data.min(), x_data.max()
     y_min, y_max = y_data.min(), y_data.max()
     x_center = (x_min + x_max) / 2
@@ -781,25 +822,45 @@ def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=Tru
     cross_x_min, cross_x_max = x_center - dx, x_center + dx
     cross_y_min, cross_y_max = y_center - dy, y_center + dy
     cross_style = {"color": "red", "linestyle": "-", "linewidth": 1.2, "alpha": 0.8}
-    ax[1, 0].plot([cross_x_min, cross_x_max], [y_center, y_center], **cross_style)
-    ax[1, 0].plot([x_center, x_center], [cross_y_min, cross_y_max], **cross_style)
-    text_style = {"color": "red", "fontsize": 9, "fontweight": "bold", "bbox": dict(facecolor="white", alpha=0.6, edgecolor="none", pad=1)}
-    ax[1, 0].text(cross_x_min, y_center, f"{x_min:.3f}", ha="right", va="center", **text_style)
-    ax[1, 0].text(cross_x_max, y_center, f"{x_max:.3f}", ha="left", va="center", **text_style)
-    ax[1, 0].text(x_center, cross_y_min, f"{y_min:.3f}", ha="center", va="top", **text_style)
-    ax[1, 0].text(x_center, cross_y_max, f"{y_max:.3f}", ha="center", va="bottom", **text_style)
-    ax[1, 0].text(x_center, y_center, "max", ha="center", va="center", color="red", fontweight="bold", bbox=dict(facecolor="white", alpha=1.0, edgecolor="none", pad=2))
-
-    ax[1, 0].set_title(f"Trajectory. Slew Rate: {slew_rate.abs().max().detach().item():.2f}")
+    ax_traj.plot([cross_x_min, cross_x_max], [y_center, y_center], **cross_style)
+    ax_traj.plot([x_center, x_center], [cross_y_min, cross_y_max], **cross_style)
+    text_style = {
+        "color": "red",
+        "fontsize": 9,
+        "fontweight": "bold",
+        "bbox": dict(facecolor='white', alpha=0.6, edgecolor='none', pad=1),
+    }
+    ax_traj.text(cross_x_min, y_center, f'{x_min:.3f}', ha='right', va='center', **text_style)
+    ax_traj.text(cross_x_max, y_center, f'{x_max:.3f}', ha='left', va='center', **text_style)
+    ax_traj.text(x_center, cross_y_min, f'{y_min:.3f}', ha='center', va='top', **text_style)
+    ax_traj.text(x_center, cross_y_max, f'{y_max:.3f}', ha='center', va='bottom', **text_style)
+    ax_traj.text(
+        x_center,
+        y_center,
+        'max',
+        ha='center',
+        va='center',
+        color='red',
+        fontweight='bold',
+        bbox=dict(facecolor='white', alpha=1.0, edgecolor='none', pad=2),
+    )
+    ax_traj.set_aspect("equal", adjustable="box")
+    ax_traj.set_title(f"Final Trajectory. Slew Rate: {slew_rate.abs().max().detach().item():.2f}")
+    ax_traj.grid(True, linestyle='--', alpha=0.5)
+    fig_traj.tight_layout()
 
     if export and export_path is not None:
         os.makedirs(export_path, exist_ok=True)
-        plt.savefig(os.path.join(export_path, "final_figure.png"), dpi=300)
+        fig.savefig(os.path.join(export_path, "final_figure.png"), dpi=300)
+        fig_traj.savefig(os.path.join(export_path, "final_traj.png"), dpi=300)
+
     if show:
         plt.show()
     else:
-        plt.close()
-    return im1, im2, im3, im4, im5, im6
+        plt.close(fig)
+        plt.close(fig_traj)
+
+    return fig, fig_traj
 
 
 def export_k_as_csv(traj, path):
@@ -809,6 +870,28 @@ def export_k_as_csv(traj, path):
     max_abs_point = np.argmax(traj_abs)
     np.savetxt(os.path.join(path, "k_trajectory.csv"), traj_np, delimiter=",")
     np.savetxt(os.path.join(path, "k_trajectory_maxpt.csv"), np.array([[max_abs_point, 0], [max_abs_point, 1]]), delimiter=",")
+
+
+def calculate_fwhm(profile):
+    half_max = np.max(profile) / 2.0
+    above_half = np.where(profile >= half_max)[0]
+    
+    return above_half[-1] - above_half[0] + 1
+
+
+def calculate_pslr(profile, distance=10, prominence=None):
+    """
+    Calculates Peak Side Lobe Ratio (PSLR) using scipy.signal.find_peaks.
+    """
+    peaks, _ = find_peaks(profile, distance=distance, prominence=prominence)
+    peak_values = profile[peaks]
+    main_lobe_idx_in_peaks = np.argmax(peak_values)
+    peak_main = peak_values[main_lobe_idx_in_peaks]
+    side_lobe_values = np.delete(peak_values, main_lobe_idx_in_peaks)
+    max_sidelobe = np.max(side_lobe_values)
+    pslr_db = 20 * np.log10(peak_main / max_sidelobe)
+        
+    return pslr_db
 
 
 def psf(reconstructor, fft_template, rosette_init, rosette_final, device, export_path):
@@ -847,9 +930,14 @@ def psf(reconstructor, fft_template, rosette_init, rosette_final, device, export
 
         # Center index for 1D profiles
         center_idx = psf_init_np.shape[0] // 2
+        
+        fig, axs = plt.subplots(2, 3, figsize=(18, 8))
 
-        fig, axs = plt.subplots(2, 3, figsize=(24, 8))
-
+        fwhm_init = calculate_fwhm(psf_init_np[center_idx, :])
+        fwhm_final = calculate_fwhm(psf_final_np[center_idx, :])
+        pslr_init = calculate_pslr(psf_init_np[center_idx, :])
+        pslr_final = calculate_pslr(psf_final_np[center_idx, :])
+        
         # --- Linear Scale ---
         im0 = axs[0, 0].imshow(psf_init_np, cmap="gist_gray")
         axs[0, 0].set_title("Initial PSF")
@@ -858,9 +946,9 @@ def psf(reconstructor, fft_template, rosette_init, rosette_final, device, export
         im1 = axs[0, 1].imshow(psf_final_np, cmap="gist_gray")
         axs[0, 1].set_title("Final PSF")
         fig.colorbar(im1, ax=axs[0, 1])
-
-        axs[0, 2].plot(psf_init_np[center_idx, :], label="Initial PSF", alpha=0.8)
-        axs[0, 2].plot(psf_final_np[center_idx, :], label="Final Optimized PSF", alpha=0.8)
+        
+        axs[0, 2].plot(psf_init_np[center_idx, :], alpha=0.8, label=f"Initial PSF: \nFWHM={fwhm_init:.1f}px, \nPSLR={pslr_init:.1f}dB")
+        axs[0, 2].plot(psf_final_np[center_idx, :], alpha=0.8, label=f"Final PSF: \nFWHM={fwhm_final:.1f}px, \nPSLR={pslr_final:.1f}dB")
         axs[0, 2].set_title("PSF Profile (Linear)")
         axs[0, 2].set_xlabel("Pixel")
         axs[0, 2].set_ylabel("PSF (A.U.)")
