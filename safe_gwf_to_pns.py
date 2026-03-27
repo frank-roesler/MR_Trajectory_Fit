@@ -7,11 +7,20 @@ from params import *
 
 
 class SAFE_PNS:
-    def __init__(self, dt, hw_path, mode="full"):
+    """
+    implementation of a range of methods for PNS computation from the field gradient gwf.
+    The computation is always composed of 3 lowpass filters with varying parameter tau
+    and scaling. The methods differ only in the computation of the lowpass filters and are specified
+    by the 'method' argument. Possible values for 'method' are ['euler', 'fourier', 'fixed_point', 'fourier_plateau'].
+    'euler', 'fourier', 'fixed_point' are different methods of solving the lowpass ODE.
+    'fourier_plateau' should only be used when dgdt is periodic and only computes the long time asymptotics of the low pass.
+    """
+
+    def __init__(self, dt, hw_path, method="full"):
         self.hw = safe_hw_from_asc.safe_hw_from_asc(hw_path)
         self.hw_check()
         self.dt = dt
-        self.mode = mode
+        self.method = method
 
     def example_hw(self):
         """

@@ -56,7 +56,11 @@ for step in range(1000):
     recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
     # Compute PNS from gradients - fully differentiable
     gx, gy, t_axis = compute_gradients_from_traj(traj, dt, params["gamma"])
-    pns_x, pns_y, pns_norm, t_pns = compute_pns_from_gradients(safe_model, gx, gy)
+
+    # --------- !!! SWAP x AND y PNS BECAUSE THEY ARE SWAPPED IN IDEA !!! ---------
+    pns_y, pns_x, pns_norm, t_pns = compute_pns_from_gradients(safe_model, gx, gy)
+    # -----------------------------------------------------------------------------
+
     max_pns = pns_norm.max()
 
     # Losses
