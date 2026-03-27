@@ -899,6 +899,8 @@ def psf(reconstructor, fft_template, rosette_init, rosette_final, device, export
         fwhm_final = calculate_fwhm(psf_final_np[center_idx, :])
         pslr_init = calculate_pslr(psf_init_np[center_idx, :])
         pslr_final = calculate_pslr(psf_final_np[center_idx, :])
+        islr_init = calculate_islr(psf_init)
+        islr_final = calculate_islr(psf_final)
 
         # --- Linear Scale ---
         im0 = axs[0, 0].imshow(psf_init_np, cmap="gist_gray")
@@ -909,8 +911,8 @@ def psf(reconstructor, fft_template, rosette_init, rosette_final, device, export
         axs[0, 1].set_title("Final PSF")
         fig.colorbar(im1, ax=axs[0, 1])
 
-        axs[0, 2].plot(psf_init_np[center_idx, :], alpha=0.8, label=f"Initial PSF: \nFWHM={fwhm_init:.1f}px, \nPSLR={pslr_init:.1f}dB")
-        axs[0, 2].plot(psf_final_np[center_idx, :], alpha=0.8, label=f"Final PSF: \nFWHM={fwhm_final:.1f}px, \nPSLR={pslr_final:.1f}dB")
+        axs[0, 2].plot(psf_init_np[center_idx, :], alpha=0.8, label=f"Initial PSF: \nFWHM={fwhm_init:.1f}px, \nPSLR={pslr_init:.1f}dB, \nISLR={islr_init:.2f}")
+        axs[0, 2].plot(psf_final_np[center_idx, :], alpha=0.8, label=f"Final PSF: \nFWHM={fwhm_final:.1f}px, \nPSLR={pslr_final:.1f}dB, \nISLR={islr_final:.2f}")
         axs[0, 2].set_title("PSF Profile (Linear)")
         axs[0, 2].set_xlabel("Pixel")
         axs[0, 2].set_ylabel("PSF (A.U.)")
