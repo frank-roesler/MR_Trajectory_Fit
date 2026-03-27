@@ -394,13 +394,14 @@ class TrainPlotter:
         max_pns = pns_norm.max().item()
         self.max_pns_norms.append(max_pns)
 
-        if step % 50 == 0:
+        plotting_freq = 10
+        if step % plotting_freq == 0:
             # --- Update Recon and Losses (for the image) ---
             recon_mirtorch = self.reconstructor.reconstruct_img(self.fft, rosette, method="mirtorch")
             image_loss_mirtorch = self.loss_fn(recon_mirtorch, self.phantoms)
             self.img_losses_mirtorch.append(image_loss_mirtorch.detach().item())
 
-            self.img_loss_line_mirtorch.set_data(range(0, 10 * len(self.img_losses_mirtorch), 10), self.img_losses_mirtorch)
+            self.img_loss_line_mirtorch.set_data(range(0, plotting_freq * len(self.img_losses_mirtorch), plotting_freq), self.img_losses_mirtorch)
             self.img_loss_line.set_data(range(len(self.img_losses)), self.img_losses)
             self.grad_loss_line.set_data(range(len(self.grad_losses)), self.grad_losses)
             self.pns_loss_line.set_data(range(len(self.pns_losses)), self.pns_losses)

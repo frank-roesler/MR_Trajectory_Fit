@@ -38,7 +38,7 @@ loss_fcns = LossCollection(params["loss_function"])
 reconstructor = ImageRecon(params, kmax_img, normalization, dcfnet="unet")  # k-space -> Image
 plotter = TrainPlotter(params, fft, reconstructor, phantoms, loss_fcns.loss_fn, optimizer)
 checkpointer = Checkpointer(export_path, params, dt)
-safe_model = SAFE_PNS(dt=dt, hw_path="safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc", mode="full")
+safe_model = SAFE_PNS(dt=dt, hw_path="safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc", method="fourier")
 best_rosette = None  # for PSF analysis at the end
 best_traj = None
 best_slew_rate = None
@@ -57,9 +57,9 @@ for step in range(1000):
     # Compute PNS from gradients - fully differentiable
     gx, gy, t_axis = compute_gradients_from_traj(traj, dt, params["gamma"])
 
-    # --------- !!! SWAP x AND y PNS BECAUSE THEY ARE SWAPPED IN IDEA !!! ---------
-    pns_y, pns_x, pns_norm, t_pns = compute_pns_from_gradients(safe_model, gx, gy)
-    # -----------------------------------------------------------------------------
+    # --------- !!! SWAP x AND y FOR PNS BECAUSE THEY ARE SWAPPED IN IDEA !!! ---------
+    pns_x, pns_y, pns_norm, t_pns = compute_pns_from_gradients(safe_model, gy, gx)
+    # ---------------------------------------------------------------------------------
 
     max_pns = pns_norm.max()
 

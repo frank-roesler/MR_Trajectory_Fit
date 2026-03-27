@@ -48,11 +48,12 @@ class SAFE_PNS:
     'fourier_plateau' should only be used when dgdt is periodic and only computes the long time asymptotics of the low pass.
     """
 
-    def __init__(self, dt, hw_path, method="full"):
+    def __init__(self, dt, hw_path, method="full", verbose=False):
         self.hw = safe_hw_from_asc.safe_hw_from_asc(hw_path)
         self.hw_check()
         self.dt = dt
         self.method = method
+        self.verbose = verbose
 
     def example_hw(self):
         """
@@ -123,11 +124,11 @@ class SAFE_PNS:
         return fw
 
     def fft_pns_plateau(self, dgdt: torch.Tensor, hw_axis: dict) -> torch.Tensor:
-        lp1 = self.fp_from_one_Gamma_period(dgdt, hw_axis["tau1"], self.dt)
+        lp1 = self.fp_from_one_Gamma_period(dgdt, hw_axis["tau1"])
         stim1 = hw_axis["a1"] * torch.abs(lp1)
-        lp2 = self.fp_from_one_Gamma_period(torch.abs(dgdt), hw_axis["tau2"], self.dt)
+        lp2 = self.fp_from_one_Gamma_period(torch.abs(dgdt), hw_axis["tau2"])
         stim2 = hw_axis["a2"] * lp2
-        lp3 = self.fp_from_one_Gamma_period(dgdt, hw_axis["tau3"], self.dt)
+        lp3 = self.fp_from_one_Gamma_period(dgdt, hw_axis["tau3"])
         stim3 = hw_axis["a3"] * torch.abs(lp3)
         stim = (stim1 + stim2 + stim3) / hw_axis["stim_thresh"] * hw_axis["g_scale"] * 100.0
         return stim
@@ -152,12 +153,13 @@ class SAFE_PNS:
                     break
             if n < math.log10(threshold):
                 break
-        print("-" * 100)
-        print(f"Optimal section length: {section_length}")
-        print(f"Steps per section: {m}")
-        print(f"Number of sections: {n_sections}")
-        print(f"Total steps: {n_sections*m}")
-        print("-" * 100)
+        if self.verbose:
+            print("-" * 100)
+            print(f"Optimal section length: {section_length}")
+            print(f"Steps per section: {m}")
+            print(f"Number of sections: {n_sections}")
+            print(f"Total steps: {n_sections*m}")
+            print("-" * 100)
         return section_length, m
 
     def fixed_point_method(self, tau, dgdt, steps_per_section, section_length):
@@ -193,6 +195,33 @@ class SAFE_PNS:
         stim = (stim1 + stim2 + stim3) / hw_axis["stim_thresh"] * hw_axis["g_scale"] * 100.0
         return stim
 
+    def safe_tau_lowpass_euler(self, dgdt: torch.Tensor, tau: float) -> torch.Tensor:
+        """
+        Differentiable RC lowpass filter (like MATLAB loop).
+        dgdt: (time,)
+        tau: time constant in ms
+        dt: sampling interval in ms
+        cutoff: stopping criterion
+        """
+
+        alpha = self.dt / (tau + self.dt)
+        fw = torch.zeros_like(dgdt)
+        fw[0] = alpha * dgdt[0]
+        for i in range(1, dgdt.shape[0]):
+            fw[i] = alpha * dgdt[i] + (1 - alpha) * fw[i - 1]
+
+        return fw
+
+    def safe_pns_model_euler(self, dgdt: torch.Tensor, hw_axis: dict) -> torch.Tensor:
+        lp1 = self.safe_tau_lowpass_euler(dgdt, hw_axis["tau1"])
+        stim1 = hw_axis["a1"] * torch.abs(lp1)
+        lp2 = self.safe_tau_lowpass_euler(torch.abs(dgdt), hw_axis["tau2"])
+        stim2 = hw_axis["a2"] * lp2
+        lp3 = self.safe_tau_lowpass_euler(dgdt, hw_axis["tau3"])
+        stim3 = hw_axis["a3"] * torch.abs(lp3)
+        stim = (stim1 + stim2 + stim3) / hw_axis["stim_thresh"] * hw_axis["g_scale"] * 100.0
+        return stim
+
     def safe_gwf_to_pns(self, gwf: torch.Tensor):
         dgdt = torch.gradient(gwf, spacing=self.dt, dim=0)[0]
         if self.method == "fourier_plateau":
@@ -205,10 +234,15 @@ class SAFE_PNS:
             pns_y = self.pns_fixed_point(dgdt[:, 1], self.hw["y"])
             pns_z = self.pns_fixed_point(dgdt[:, 2], self.hw["z"])
             return torch.stack([pns_x, pns_y, pns_z], dim=1)
-        else:
+        elif self.method == "fourier":
             pns_x = self.safe_pns_model_fourier(dgdt[:, 0], self.hw["x"])
             pns_y = self.safe_pns_model_fourier(dgdt[:, 1], self.hw["y"])
             pns_z = self.safe_pns_model_fourier(dgdt[:, 2], self.hw["z"])
+            return torch.stack([pns_x, pns_y, pns_z], dim=1)
+        else:
+            pns_x = self.safe_pns_model_euler(dgdt[:, 0], self.hw["x"])
+            pns_y = self.safe_pns_model_euler(dgdt[:, 1], self.hw["y"])
+            pns_z = self.safe_pns_model_euler(dgdt[:, 2], self.hw["z"])
             return torch.stack([pns_x, pns_y, pns_z], dim=1)
 
 
