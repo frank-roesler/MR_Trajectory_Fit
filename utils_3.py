@@ -856,6 +856,17 @@ def calculate_pslr(profile, distance=10, prominence=None):
     return pslr_db
 
 
+def calculate_islr(psf):
+    center = torch.tensor(psf.shape) // 2
+    r = 1  # radius of main lobe
+    yy, xx = torch.meshgrid(torch.arange(psf.shape[0]), torch.arange(psf.shape[1]), indexing="ij")
+    mask_main = (xx - center[1]) ** 2 + (yy - center[0]) ** 2 <= r**2
+    main_energy = (psf[mask_main] ** 2).sum()
+    side_energy = (psf[~mask_main] ** 2).sum()
+    islr = side_energy / main_energy
+    return islr
+
+
 def psf(reconstructor, fft_template, rosette_init, rosette_final, device, export_path):
     """
     Computes, compares, and plots the Point Spread Function (PSF) for the initial and final trajectories.
