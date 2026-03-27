@@ -6,6 +6,38 @@ from torch.fft import rfft, irfft, fft, ifft, fftfreq
 from params import *
 
 
+def cumulative_trapezoid(y, dx=1.0, initial=0.0, dim=0):
+    """
+    PyTorch version of SciPy's cumulative_trapezoid with `initial` argument.
+
+    Parameters
+    ----------
+    y : torch.Tensor
+        Input values to integrate along `dim`.
+    dx : float
+        Uniform spacing between points.
+    initial : float or tensor
+        Value to prepend at the start (matches SciPy's initial=0 behavior).
+    dim : int
+        Dimension along which to integrate.
+
+    Returns
+    -------
+    torch.Tensor
+        Cumulative trapezoidal integral of `y`, same length as `y`.
+    """
+    cumsum = torch.cumulative_trapezoid(y, dx=dx, dim=dim)
+    if not torch.is_tensor(initial):
+        initial_tensor = torch.tensor([initial], device=y.device, dtype=y.dtype)
+    else:
+        initial_tensor = initial.to(y.device).type(y.dtype)
+        if initial_tensor.ndim == 0:
+            initial_tensor = initial_tensor.unsqueeze(0)
+    slices = [slice(None)] * y.ndim
+    slices[dim] = slice(0, 1)
+    return torch.cat([initial_tensor, cumsum], dim=dim)
+
+
 class SAFE_PNS:
     """
     implementation of a range of methods for PNS computation from the field gradient gwf.
@@ -100,12 +132,78 @@ class SAFE_PNS:
         stim = (stim1 + stim2 + stim3) / hw_axis["stim_thresh"] * hw_axis["g_scale"] * 100.0
         return stim
 
+    def log_norm_T(self, tmax, tau, m):
+        m = torch.as_tensor(m)
+        f1 = -0.5 * torch.log10(2 * torch.pi * m)
+        f2 = m * torch.log10(math.exp(1) * tmax / (m * tau))
+        return f1 + f2
+
+    def get_optimal_split(self, tau, full_length, threshold=1e-5):
+        n_sections = 1
+        while True:
+            m = 0
+            n = float("inf")
+            section_length = full_length // n_sections
+            while n > math.log10(threshold):
+                m += 1
+                n = self.log_norm_T(self.dt * section_length, tau, m)
+                if n > 4:
+                    n_sections += 1
+                    break
+            if n < math.log10(threshold):
+                break
+        print("-" * 100)
+        print(f"Optimal section length: {section_length}")
+        print(f"Steps per section: {m}")
+        print(f"Number of sections: {n_sections}")
+        print(f"Total steps: {n_sections*m}")
+        print("-" * 100)
+        return section_length, m
+
+    def fixed_point_method(self, tau, dgdt, steps_per_section, section_length):
+        pref = self.dt / tau
+        fw = torch.zeros_like(dgdt)
+        full_length = len(dgdt)
+        n_full_sections = full_length // section_length
+        for i in range(n_full_sections + 1):
+            starting_pos = i * section_length
+            prev_pos = max(starting_pos - 1, 0)
+            if i < n_full_sections:
+                current_range = range(prev_pos, (i + 1) * section_length)
+            else:
+                current_range = range(prev_pos, full_length)
+            dgdt_i = dgdt[current_range]
+            prev_value = fw[prev_pos]
+            for _ in range(steps_per_section):
+                Tf = pref * cumulative_trapezoid(dgdt_i - fw[current_range], initial=0)
+                fw[current_range] = prev_value + Tf
+        return fw
+
+    def pns_fixed_point(self, dgdt: torch.Tensor, hw_axis: dict) -> torch.Tensor:
+        threshold = 1e-4
+        section_length, steps_per_section = self.get_optimal_split(hw_axis["tau1"], len(dgdt), threshold=threshold)
+        lp1 = self.fixed_point_method(hw_axis["tau1"], dgdt, steps_per_section, section_length)
+        stim1 = hw_axis["a1"] * torch.abs(lp1)
+        section_length, steps_per_section = self.get_optimal_split(hw_axis["tau2"], len(dgdt), threshold=threshold)
+        lp2 = self.fixed_point_method(hw_axis["tau2"], dgdt.abs(), steps_per_section, section_length)
+        stim2 = hw_axis["a2"] * lp2
+        section_length, steps_per_section = self.get_optimal_split(hw_axis["tau3"], len(dgdt), threshold=threshold)
+        lp3 = self.fixed_point_method(hw_axis["tau3"], dgdt, steps_per_section, section_length)
+        stim3 = hw_axis["a3"] * torch.abs(lp3)
+        stim = (stim1 + stim2 + stim3) / hw_axis["stim_thresh"] * hw_axis["g_scale"] * 100.0
+        return stim
+
     def safe_gwf_to_pns(self, gwf: torch.Tensor):
         dgdt = torch.gradient(gwf, spacing=self.dt, dim=0)[0]
-        if self.mode == "plateau":
+        if self.method == "fourier_plateau":
             pns_x = self.fft_pns_plateau(dgdt[:, 0], self.hw["x"])
             pns_y = self.fft_pns_plateau(dgdt[:, 1], self.hw["y"])
             pns_z = self.fft_pns_plateau(dgdt[:, 2], self.hw["z"])
+            return torch.stack([pns_x, pns_y, pns_z], dim=1)
+        elif self.method == "fixed_point":
+            pns_x = self.pns_fixed_point(dgdt[:, 0], self.hw["x"])
+            pns_y = self.pns_fixed_point(dgdt[:, 1], self.hw["y"])
+            pns_z = self.pns_fixed_point(dgdt[:, 2], self.hw["z"])
             return torch.stack([pns_x, pns_y, pns_z], dim=1)
         else:
             pns_x = self.safe_pns_model_fourier(dgdt[:, 0], self.hw["x"])
