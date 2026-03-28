@@ -17,7 +17,7 @@ import json
 from os.path import join, dirname
 from scipy.signal import find_peaks
 from mirtorch.linear import FFTCn
-
+from params import params
 
 # import safe_hw_from_asc
 
@@ -284,7 +284,7 @@ class TrainPlotter:
         ax_img = axs[0, 1]
         ax_traj = axs[0, 2]
         ax_grad = axs[1, 0]  # New: Gradient Plot
-        ax_pns = axs[1, 1]  # New: PNS Plot
+        ax_angles = axs[1, 1]  # New: PNS Plot
         ax_pns_norm = axs[1, 2]  # New: max PNS Norm Plot
 
         # --- 1. Loss Plot (Top Left) ---
@@ -327,16 +327,12 @@ class TrainPlotter:
         ax_grad.legend(loc="upper right", prop={"size": 8})
         ax_grad.grid(True, linestyle="--", alpha=0.5)
 
-        # --- 5. PNS Plots (Bottom Middle) ---
-        ax_pns = axs[1, 1]
-        (pns_x_line,) = ax_pns.plot([], [], label="PNS X", linewidth=0.3, color="tab:blue")
-        (pns_y_line,) = ax_pns.plot([], [], label="PNS Y", linewidth=0.3, color="tab:orange")
-        (pns_norm_line,) = ax_pns.plot([], [], label="PNS Norm", linewidth=0.3, color="k")
-        ax_pns.set_title("PNS for shown traj.")
-        ax_pns.set_xlabel("Time (ms)")
-        ax_pns.set_ylabel("Stimulation (%)")
-        ax_pns.legend(loc="upper right", prop={"size": 8})
-        ax_pns.grid(True, linestyle="--", alpha=0.5)
+        # --- 5. Angle Plots (Bottom Middle) ---
+        ax_angles = axs[1, 1]
+        (angles_line,) = ax_angles.plot([], [], label="Angles", linewidth=0.7, color="tab:blue", marker=".", markersize=3)
+        ax_angles.set_title("Angles between adjacent petals.")
+        ax_angles.set_ylabel("Angle (rad)")
+        ax_angles.legend(loc="upper right", prop={"size": 8})
 
         # --- 6. PNS Norm Plot (Bottom Right) ---
         ax_pns_norm = axs[1, 2]
@@ -362,9 +358,7 @@ class TrainPlotter:
         self.gx_line = gx_line
         self.gy_line = gy_line
 
-        self.pns_x_line = pns_x_line
-        self.pns_y_line = pns_y_line
-        self.pns_norm_line = pns_norm_line
+        self.angles_line = angles_line
         self.pns_norm_max_line = pns_norm_max_line
 
         self.ax_loss = ax_loss
@@ -372,7 +366,7 @@ class TrainPlotter:
         self.ax_traj = ax_traj
         self.ax_img = ax_img
         self.ax_grad = ax_grad
-        self.ax_pns = ax_pns
+        self.ax_angles = ax_angles
         self.ax_pns_norm = ax_pns_norm
 
         self.grad_losses = []
@@ -383,7 +377,7 @@ class TrainPlotter:
         self.max_pns_norms = []
         self.pns_losses = []
 
-    def update(self, step, grad_loss, img_loss, slew_loss, pns_loss, total_loss, recon, traj, rosette, gx, gy, t_axis, pns_x, pns_y, pns_norm, t_pns):
+    def update(self, step, grad_loss, img_loss, slew_loss, pns_loss, total_loss, recon, traj, rosette, gx, gy, t_axis, angles, pns_norm, t_pns):
 
         # Update for loss plot (final_figure.png and train_figure.png), evaluation, checkpoint..
         self.grad_losses.append(grad_loss.detach().item())
@@ -431,12 +425,11 @@ class TrainPlotter:
 
             self.ax_img.set_title(f"Recon[0] (abs) Step {step+1}")
 
-            # 3. Plot PNS components and norm (convert to numpy for plotting)
-            self.pns_x_line.set_data(t_pns.detach().cpu().numpy(), pns_x.detach().cpu().numpy())
-            self.pns_y_line.set_data(t_pns.detach().cpu().numpy(), pns_y.detach().cpu().numpy())
-            self.pns_norm_line.set_data(t_pns.detach().cpu().numpy(), pns_norm.detach().cpu().numpy())
-            self.ax_pns.relim()
-            self.ax_pns.autoscale_view()
+            # 3. Plot Angles (convert to numpy for plotting)
+            self.angles_line.set_data(np.arange(angles.shape[0]), angles.detach().cpu().numpy())
+            self.ax_angles.relim()
+            self.ax_angles.autoscale_view()
+            self.ax_angles.set_ylim(0, 4 * np.pi / params["n_petals"])
 
             # 4. Track and plot maximum PNS norm over steps
             self.pns_norm_max_line.set_data(range(len(self.max_pns_norms)), self.max_pns_norms)

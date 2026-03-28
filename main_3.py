@@ -50,7 +50,7 @@ with torch.no_grad():
 
 
 # for step in range(params["train_steps"]):
-for step in range(1000):
+for step in range(3000):
     traj, angles = model(t)  # (timesteps, 2)
     rosette, *derivatives = make_rosette(angles, traj, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
@@ -65,9 +65,9 @@ for step in range(1000):
 
     # Losses
     # pns_loss = loss_fcns.pns_loss(max_pns, params, mode=args.pns_mode, delta=1)
-    pns_loss = loss_fcns.pns_loss(max_pns, params, mode="threshold")
+    pns_loss = loss_fcns.pns_loss(max_pns, params, mode="exp")
     # grad_loss, slew_loss = loss_fcns.grad_slew_loss(*derivatives, params, grad_mode="exp", slew_mode=args.slew_mode, delta=1)
-    grad_loss, slew_loss = loss_fcns.grad_slew_loss(*derivatives, params, grad_mode="exp", slew_mode="threshold")
+    grad_loss, slew_loss = loss_fcns.grad_slew_loss(*derivatives, params, grad_mode="exp", slew_mode="exp")
     image_loss = loss_fcns.loss_fn(recon, phantoms)
     total_loss = image_loss + grad_loss + slew_loss + pns_loss
 
@@ -77,8 +77,6 @@ for step in range(1000):
     scheduler.step(total_loss.detach().item())
 
     plotter.print_info(step, image_loss, grad_loss, slew_loss, pns_loss, *derivatives, max_pns, gx, gy)
-    if step % 10 == 0:
-        print(angles)
     if total_loss.detach().item() < 0.999 * plotter.best_loss and step > 100:
         plotter.best_loss = total_loss.detach().item()
         best_rosette = rosette.detach().clone()
@@ -86,7 +84,7 @@ for step in range(1000):
         slew_rate = checkpointer.save_checkpoint(model, *derivatives, rosette)
         best_slew_rate = slew_rate.detach().clone()
         plotter.export_figure(export_path)
-    plotter.update(step, grad_loss, image_loss, slew_loss, pns_loss, total_loss, recon, traj, rosette, gx, gy, t_axis, pns_x, pns_y, pns_norm, t_pns)
+    plotter.update(step, grad_loss, image_loss, slew_loss, pns_loss, total_loss, recon, traj, rosette, gx, gy, t_axis, angles, pns_norm, t_pns)
 
 plotter.export_figure(export_path)
 
