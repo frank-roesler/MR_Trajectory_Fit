@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from params import params
 
 
 class FourierPulseOpt(nn.Module):
@@ -16,7 +17,7 @@ class FourierPulseOpt(nn.Module):
         p = p * weights.unsqueeze(1)
         self.params = torch.nn.Parameter(p)
         k = torch.arange(-n_coeffs, n_coeffs + 1).unsqueeze(0)
-        self.register_buffer('freqs', 2 * torch.pi * k / (t_max - t_min))
+        self.register_buffer("freqs", 2 * torch.pi * k / (t_max - t_min))
 
     def to(self, device):
         # freqs is now a buffer and will be moved automatically
@@ -42,6 +43,7 @@ class FourierCurve(nn.Module):
             ]
         )
         self.name = "FourierCurve"
+        self.angles = torch.nn.Parameter(2 * torch.pi / params["n_petals"] * torch.ones(params["n_petals"]))
 
     def to(self, device):
         for pulse in self.pulses:
@@ -51,7 +53,7 @@ class FourierCurve(nn.Module):
     def forward(self, x):
         x = x[:-1, :]
         out = torch.cat([self.pulses[0](x) - self.pulses[0](0), self.pulses[1](x) - self.pulses[1](0)], dim=-1)
-        return out * self.scaling
+        return out * self.scaling, self.angles
 
 
 class Ellipse(nn.Module):
@@ -62,7 +64,7 @@ class Ellipse(nn.Module):
         self.name = "Ellipse"
         self.tmin = tmin
         self.tmax = tmax
-        self.register_buffer('k', torch.tensor(2 * torch.pi / (tmax - tmin)))
+        self.register_buffer("k", torch.tensor(2 * torch.pi / (tmax - tmin)))
 
     def to(self, device):
         return super().to(device)

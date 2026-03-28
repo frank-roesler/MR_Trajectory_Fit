@@ -23,10 +23,9 @@ torch.set_printoptions(threshold=100000)
 
 device = get_device()
 
-batch_size = 2
+batch_size = 1
 phantoms = get_batch_of_phantoms(batch_size, size=(params["img_size"], params["img_size"]), type="glpu").to(device)
 fft = compute_initial_fft(phantoms, padding=params["img_size"])
-rotation_matrix = get_rotation_matrix(params["n_petals"], device=device).detach()
 t = torch.linspace(0, params["duration"], steps=params["timesteps"], device=device).unsqueeze(1)  # (timesteps, 1)
 
 model = FourierCurve(tmin=0, tmax=params["duration"], initial_max=kmax_traj, n_coeffs=params["model_size"], coeff_lvl=1e-2).to(device)  # 1e-2
@@ -44,15 +43,16 @@ best_traj = None
 best_slew_rate = None
 
 with torch.no_grad():
-    rosette, _, _ = make_rosette(model(t), rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
+    traj, angles = model(t)
+    rosette, _, _ = make_rosette(angles, traj, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     rosette_init = rosette.clone().to(device)  # for later PSF analysis
     initial_recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
 
 
 # for step in range(params["train_steps"]):
 for step in range(1000):
-    traj = model(t)  # (timesteps, 2)
-    rosette, *derivatives = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
+    traj, angles = model(t)  # (timesteps, 2)
+    rosette, *derivatives = make_rosette(angles, traj, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
     # Compute PNS from gradients - fully differentiable
     gx, gy, t_axis = compute_gradients_from_traj(traj, dt, params["gamma"])
@@ -77,6 +77,8 @@ for step in range(1000):
     scheduler.step(total_loss.detach().item())
 
     plotter.print_info(step, image_loss, grad_loss, slew_loss, pns_loss, *derivatives, max_pns, gx, gy)
+    if step % 10 == 0:
+        print(angles)
     if total_loss.detach().item() < 0.999 * plotter.best_loss and step > 100:
         plotter.best_loss = total_loss.detach().item()
         best_rosette = rosette.detach().clone()

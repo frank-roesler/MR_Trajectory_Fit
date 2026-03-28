@@ -315,7 +315,7 @@ class TrainPlotter:
         self.cbar = self.fig.colorbar(im_recon, ax=ax_img)
 
         # --- 3. Trajectory (Top Right) ---
-        (traj_line,) = ax_traj.plot([], [], label="trajectory", linewidth=0.7, marker=".", markersize=3)
+        (traj_line,) = ax_traj.plot([], [], label="trajectory", linewidth=0.5)
         ax_traj.set_title("Trajectory")
 
         # --- 4. Gradients Gx/Gy (Bottom Left) ---
@@ -419,7 +419,7 @@ class TrainPlotter:
             self.im_recon.set_clim(vmin=0, vmax=img.max())
 
             # --- Update Trajectory ---
-            self.traj_line.set_data(traj[:, 0].detach().cpu().numpy(), traj[:, 1].detach().cpu().numpy())
+            self.traj_line.set_data(rosette[:-2, 0].detach().cpu().numpy(), rosette[:-2, 1].detach().cpu().numpy())
             self.ax_traj.relim()
             self.ax_traj.autoscale_view()
 
@@ -591,22 +591,25 @@ def get_batch_of_phantoms(batch_size, size=(512, 512), type="shepp_logan"):
     return torch.stack(phantoms)
 
 
-def get_rotation_matrix(n_petals, device=torch.device("cpu")):
-    angle_radians = 2 * torch.pi / n_petals
-    angle_radians = torch.tensor([angle_radians], device=device)
-    rotation_matrix = torch.tensor(
+def get_rotation_matrix(angle_radians, device=torch.device("cpu")):
+    # angle_radians = 2 * torch.pi / n_petals
+    # angle_radians = torch.tensor([angle_radians], device=device)
+    c = torch.cos(angle_radians)
+    s = torch.sin(angle_radians)
+
+    rotation_matrix = torch.stack(
         [
-            [torch.cos(angle_radians), -torch.sin(angle_radians)],
-            [torch.sin(angle_radians), torch.cos(angle_radians)],
-        ],
-        device=device,
+            torch.stack([c, -s]),
+            torch.stack([s, c]),
+        ]
     )
     return rotation_matrix
 
 
-def make_rosette(traj, rotation_matrix, n_petals, kmax_img, dt, zero_filling=True):
+def make_rosette(angles, traj, n_petals, kmax_img, dt, zero_filling=True):
     rotated_trajectories = [traj]
     for i in range(n_petals - 1):
+        rotation_matrix = get_rotation_matrix(angles[i])
         traj = traj @ rotation_matrix.T
         rotated_trajectories.append(traj)
     d_max, dd_max = torch.zeros(1, 2, device=traj.device), torch.zeros(1, 2, device=traj.device)

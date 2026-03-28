@@ -5,7 +5,7 @@ export_path = os.path.join("results", datetime.now().strftime("%Y-%m-%d_%H-%M"))
 
 params = {
     "train_steps": 20000,
-    "lr": 5e-4,
+    "lr": 2e-4,
     "grad_loss_weight": 1e-2,
     "slew_loss_weight": 1e-2,
     "pns_loss_weight": 1e-3,
@@ -26,6 +26,6 @@ params = {
 
 kmax_traj = params["res"] / (2 * params["FoV"])  # 1/m
 kmax_img = params["img_size"] / (2 * params["FoV"])  # 1/m
-#print(f"kmax_traj: {kmax_traj:.4f} 1/m, kmax_img: {kmax_img:.4f} 1/m")
+# print(f"kmax_traj: {kmax_traj:.4f} 1/m, kmax_img: {kmax_img:.4f} 1/m")
 dt = params["duration"] / (params["timesteps"] - 1)
 normalization = 4 / params["img_size"] ** 2
