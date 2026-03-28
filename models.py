@@ -10,9 +10,9 @@ class FourierPulseOpt(nn.Module):
         super().__init__()
         p = coeff_lvl * torch.randn((2 * n_coeffs + 1, 2))
         if initialization == "cos":
-            p[n_coeffs + 1, 1] = 1.0
+            p[n_coeffs + 1, 1] += 1.0
         elif initialization == "sin":
-            p[n_coeffs + 1, 0] = 1.0
+            p[n_coeffs + 1, 0] += 1.0
         weights = torch.exp(-0.1 * torch.arange(-n_coeffs, n_coeffs + 1) ** 2)
         p = p * weights.unsqueeze(1)
         self.params = torch.nn.Parameter(p)
@@ -33,7 +33,7 @@ class FourierPulseOpt(nn.Module):
 
 
 class FourierCurve(nn.Module):
-    def __init__(self, tmin, tmax, initial_max=1.0, n_coeffs=51, coeff_lvl=1e-5):
+    def __init__(self, tmin, tmax, initial_max=1.0, n_coeffs=51, coeff_lvl=1e-5, angle_offset=0):
         super().__init__()
         self.scaling = initial_max * 0.5
         self.pulses = nn.ModuleList(
@@ -43,7 +43,8 @@ class FourierCurve(nn.Module):
             ]
         )
         self.name = "FourierCurve"
-        self.angles = torch.nn.Parameter(2 * torch.pi / params["n_petals"] * torch.ones(params["n_petals"]))
+        self.angles = torch.nn.Parameter((4 * torch.pi / params["n_petals"] + angle_offset) * torch.ones(params["n_petals"] // 2))
+        self.radii = torch.nn.Parameter(0.1 + 0.9 * torch.rand(params["n_petals"] // 2))
 
     def to(self, device):
         for pulse in self.pulses:
@@ -53,7 +54,7 @@ class FourierCurve(nn.Module):
     def forward(self, x):
         x = x[:-1, :]
         out = torch.cat([self.pulses[0](x) - self.pulses[0](0), self.pulses[1](x) - self.pulses[1](0)], dim=-1)
-        return out * self.scaling, self.angles
+        return out * self.scaling, self.angles, self.radii
 
 
 class Ellipse(nn.Module):

@@ -418,10 +418,10 @@ class TrainPlotter:
             self.ax_traj.autoscale_view()
 
             # 4. Plot (convert to numpy for plotting)
-            self.gx_line.set_data(t_axis.detach().cpu().numpy(), gx.detach().cpu().numpy())
-            self.gy_line.set_data(t_axis.detach().cpu().numpy(), gy.detach().cpu().numpy())
-            self.ax_grad.relim()
-            self.ax_grad.autoscale_view()
+            # self.gx_line.set_ydata(gx.detach().cpu().numpy())
+            # self.gy_line.set_ydata(gy.detach().cpu().numpy())
+            # self.ax_grad.relim()
+            # self.ax_grad.autoscale_view()
 
             self.ax_img.set_title(f"Recon[0] (abs) Step {step+1}")
 
@@ -429,7 +429,7 @@ class TrainPlotter:
             self.angles_line.set_data(np.arange(angles.shape[0]), angles.detach().cpu().numpy())
             self.ax_angles.relim()
             self.ax_angles.autoscale_view()
-            self.ax_angles.set_ylim(0, 4 * np.pi / params["n_petals"])
+            self.ax_angles.set_ylim(0, 8 * np.pi / params["n_petals"])
 
             # 4. Track and plot maximum PNS norm over steps
             self.pns_norm_max_line.set_data(range(len(self.max_pns_norms)), self.max_pns_norms)
@@ -599,12 +599,12 @@ def get_rotation_matrix(angle_radians, device=torch.device("cpu")):
     return rotation_matrix
 
 
-def make_rosette(angles, traj, n_petals, kmax_img, dt, zero_filling=True):
+def make_rosette(angles, radii, traj, n_petals, kmax_img, dt, zero_filling=True):
     rotated_trajectories = [traj]
     for i in range(n_petals - 1):
         rotation_matrix = get_rotation_matrix(angles[i])
         traj = traj @ rotation_matrix.T
-        rotated_trajectories.append(traj)
+        rotated_trajectories.append(radii[i] * traj)
     d_max, dd_max = torch.zeros(1, 2, device=traj.device), torch.zeros(1, 2, device=traj.device)
     for t in rotated_trajectories[:n_petals]:
         d, dd = compute_derivatives(t, dt)
