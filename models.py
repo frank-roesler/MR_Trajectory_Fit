@@ -44,7 +44,7 @@ class FourierCurve(nn.Module):
         )
         self.name = "FourierCurve"
         self.angles = torch.nn.Parameter((4 * torch.pi / params["n_petals"] + angle_offset) * torch.ones(params["n_petals"] // 2))
-        self.radii = torch.nn.Parameter(0.1 + 0.9 * torch.rand(params["n_petals"] // 2))
+        self.radii = torch.nn.Parameter(0.8 + 0.2 * torch.rand(params["n_petals"] // 2))
 
     def to(self, device):
         for pulse in self.pulses:

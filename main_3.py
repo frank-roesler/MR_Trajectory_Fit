@@ -50,7 +50,7 @@ with torch.no_grad():
     rosette2, _, _ = make_rosette(angles2, radii2, traj2, params["n_petals"] // 2, kmax_img, dt, zero_filling=params["zero_filling"])
     rosette = torch.cat([rosette1, rosette2], dim=0)
     rosette_init = rosette.clone().to(device)  # for later PSF analysis
-    initial_recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
+    initial_recon = reconstructor.reconstruct_img(fft, rosette, method="nudft")
 
 
 # for step in range(params["train_steps"]):
@@ -62,7 +62,7 @@ for step in range(10000):
     rosette = torch.cat([rosette1, rosette2], dim=0)
     derivatives = [torch.maximum(derivatives1[0], derivatives2[0]), torch.maximum(derivatives1[1], derivatives2[1])]
 
-    recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
+    recon = reconstructor.reconstruct_img(fft, rosette, method="nudft")
     # Compute PNS from gradients - fully differentiable
     gx1, gy1, t_axis = compute_gradients_from_traj(traj1, dt, params["gamma"])
     gx2, gy2, _ = compute_gradients_from_traj(traj2, dt, params["gamma"])

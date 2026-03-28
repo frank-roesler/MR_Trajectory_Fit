@@ -5,10 +5,10 @@ export_path = os.path.join("results", datetime.now().strftime("%Y-%m-%d_%H-%M"))
 
 params = {
     "train_steps": 20000,
-    "lr": 1e-4,
-    "grad_loss_weight": 0 * 1e-2,
-    "slew_loss_weight": 0 * 5e-3,
-    "pns_loss_weight": 0 * 1e-3,
+    "lr": 1e-3,
+    "grad_loss_weight": 1e-2,
+    "slew_loss_weight": 5e-3,
+    "pns_loss_weight": 1e-3,
     "zero_filling": True,
     "timesteps": 101,
     "duration": 0.5,  # ms
@@ -16,7 +16,7 @@ params = {
     "slew_rate": 240,
     "pns_threshold": 98,
     "gamma": 42.575575,  # Gyromagnetic ratio in MHz/T
-    "img_size": 512,  # pixels
+    "img_size": 64,  # pixels
     "FoV": 224,  # mm
     "res": 50,
     "n_petals": 80,

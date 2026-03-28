@@ -105,8 +105,8 @@ class ImageRecon:
 
     def pipe_density_compensation(self, rosette, num_iters=10):
         rosette = rosette[:, :-2]
-        traj = rosette[..., : self.timesteps]
-        n_petals = rosette.shape[-1] // self.timesteps
+        traj = rosette[..., : self.timesteps - 1]
+        n_petals = rosette.shape[-1] // (self.timesteps - 1)
         N = traj.shape[-1]
         w = torch.ones(n_petals * N, device=rosette.device)
         for _ in range(num_iters):
