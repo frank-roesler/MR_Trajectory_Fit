@@ -23,7 +23,7 @@ torch.set_printoptions(threshold=100000)
 
 device = get_device()
 
-batch_size = 2
+batch_size = 1
 phantoms = get_batch_of_phantoms(batch_size, size=(params["img_size"], params["img_size"]), type="glpu").to(device)
 fft = compute_initial_fft(phantoms, padding=params["img_size"])
 rotation_matrix = get_rotation_matrix(params["n_petals"], device=device).detach()
@@ -49,8 +49,8 @@ with torch.no_grad():
     initial_recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
 
 
-# for step in range(params["train_steps"]):
-for step in range(1000):
+for step in range(params["train_steps"]):
+# for step in range(1000):
     traj = model(t)  # (timesteps, 2)
     rosette, *derivatives = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")

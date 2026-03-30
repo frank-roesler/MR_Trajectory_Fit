@@ -93,14 +93,16 @@ class SAFE_PNS:
                     raise ValueError(f"Hardware specification {axis}.{param} is empty or missing!")
 
     def safe_pns_model_fourier(self, dgdt: torch.Tensor, hw_axis: dict) -> torch.Tensor:
-        tau_tensor = torch.Tensor([hw_axis["tau1"], hw_axis["tau2"], hw_axis["tau3"]]).unsqueeze(0)
-        a_tensor = torch.Tensor([hw_axis["a1"], hw_axis["a2"], hw_axis["a3"]]).unsqueeze(0)
+        tau_tensor = torch.tensor([hw_axis["tau1"], hw_axis["tau2"], hw_axis["tau3"]], device=dgdt.device, dtype=dgdt.dtype).unsqueeze(0)
+        a_tensor = torch.tensor([hw_axis["a1"], hw_axis["a2"], hw_axis["a3"]], device=dgdt.device, dtype=dgdt.dtype).unsqueeze(0)
         pad = dgdt.shape[0] // 2
         dgdt_padded = torch.nn.functional.pad(dgdt, (pad, pad))
         dgdt_padded = torch.stack((dgdt_padded, dgdt_padded.abs(), dgdt_padded), dim=1)
         dgdt_hat = fft(dgdt_padded, dim=0)
-        K = fftfreq(dgdt.shape[0] + 2 * pad, d=self.dt).unsqueeze(1) * 2 * torch.pi
-        lp_hat = dgdt_hat / (1 + 1j * K * tau_tensor)
+        K = fftfreq(dgdt.shape[0] + 2 * pad, d=self.dt, device=dgdt.device).unsqueeze(1) * (2 * torch.pi)
+        one = torch.tensor(1.0, device=dgdt.device, dtype=dgdt_hat.dtype)
+        j = torch.tensor(1j, device=dgdt.device, dtype=dgdt_hat.dtype)
+        lp_hat = dgdt_hat / (one + j * K.to(dgdt_hat.dtype) * tau_tensor.to(dgdt_hat.dtype))
         lp = ifft(lp_hat, dim=0)[pad:-pad].real.abs()
         stim = torch.sum(a_tensor * lp, dim=1) / hw_axis["stim_thresh"] * hw_axis["g_scale"] * 100.0
         return stim

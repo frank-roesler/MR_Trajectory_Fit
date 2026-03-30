@@ -39,7 +39,8 @@ class ImageRecon:
             self.dcfnet = UNet1D(in_channels=2, out_channels=1, features=[16, 32, 64, 128, 256])
         else:
             self.dcfnet = FCN1D(channels=[2, 128, 256, 512, 256, 128, 1], kernel_size=21)
-        dcfdict = torch.load(f"trained_models/dcfnet_{self.dcfnet.name}.pt", map_location=self.device)
+        # dcfdict = torch.load(f"trained_models/dcfnet_{self.dcfnet.name}.pt", map_location=self.device)
+        dcfdict = torch.load("trained_models/dcfnet_512_unet.pt", map_location=self.device)
         self.dcfnet.load_state_dict(dcfdict)
         self.dcfnet.to(self.device)
 
@@ -140,7 +141,7 @@ class MySSIMLoss(nn.Module):
         else:
             target_ssim = target
 
-        loss = 1.0 - self.ssim(img_ssim, target_ssim) + 0.1 * self.L1_loss(img, target)
+        loss = 1.0 - self.ssim(img_ssim, target_ssim) + 0.1 * self.L1_loss(img_ssim, target_ssim)
         return loss
 
 
