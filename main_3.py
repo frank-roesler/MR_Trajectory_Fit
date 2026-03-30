@@ -5,6 +5,7 @@ from utils_3 import (
     Checkpointer,
     compute_gradients_from_traj,
     compute_pns_from_gradients,
+    get_batch_of_phantoms_brainweb,
     get_batch_of_phantoms,
     make_rosette,
     final_plots,
@@ -23,8 +24,8 @@ torch.set_printoptions(threshold=100000)
 
 device = get_device()
 
-batch_size = 1
-phantoms = get_batch_of_phantoms(batch_size, size=(params["img_size"], params["img_size"]), type="glpu").to(device)
+batch_size = 5
+phantoms = get_batch_of_phantoms_brainweb(batch_size, minc_path="t1_icbm_normal_1mm_pn3_rf20.mnc", size=(params["img_size"], params["img_size"])).to(device)
 fft = compute_initial_fft(phantoms, padding=params["img_size"])
 rotation_matrix = get_rotation_matrix(params["n_petals"], device=device).detach()
 t = torch.linspace(0, params["duration"], steps=params["timesteps"], device=device).unsqueeze(1)  # (timesteps, 1)
@@ -49,8 +50,8 @@ with torch.no_grad():
     initial_recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
 
 
-for step in range(params["train_steps"]):
-# for step in range(1000):
+# for step in range(params["train_steps"]):
+for step in range(1000):
     traj = model(t)  # (timesteps, 2)
     rosette, *derivatives = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")

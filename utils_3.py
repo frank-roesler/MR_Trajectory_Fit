@@ -17,6 +17,8 @@ import json
 from os.path import join, dirname
 from scipy.signal import find_peaks
 from mirtorch.linear import FFTCn
+import nibabel as nib
+import random
 
 
 # import safe_hw_from_asc
@@ -39,8 +41,8 @@ class ImageRecon:
             self.dcfnet = UNet1D(in_channels=2, out_channels=1, features=[16, 32, 64, 128, 256])
         else:
             self.dcfnet = FCN1D(channels=[2, 128, 256, 512, 256, 128, 1], kernel_size=21)
-        # dcfdict = torch.load(f"trained_models/dcfnet_{self.dcfnet.name}.pt", map_location=self.device)
-        dcfdict = torch.load("trained_models/dcfnet_512_unet.pt", map_location=self.device)
+        dcfdict = torch.load(f"trained_models/dcfnet_{self.dcfnet.name}.pt", map_location=self.device)
+        # dcfdict = torch.load("trained_models/dcfnet_512_unet.pt", map_location=self.device)
         self.dcfnet.load_state_dict(dcfdict)
         self.dcfnet.to(self.device)
 
@@ -567,6 +569,51 @@ def get_device():
     #     return torch.device("mps")
     else:
         return torch.device("cpu")
+
+
+def get_phantom_brainweb(minc_path, size=(512, 512)):
+    """
+    Loads a BrainWeb .mnc volume, extracts a random 2D slice, 
+    and converts it into a PyTorch tensor.
+    """
+    
+    img = nib.load(minc_path)
+    volume = img.get_fdata()  # (X, Y, Z)
+    
+    # Random slice selection from the middle third of the volume
+    z_dim = volume.shape[0]
+    slice_idx = random.randint(z_dim // 3, 2 * z_dim // 3)
+    slice_np = volume[slice_idx, :, :]
+    slice_np = np.rot90(slice_np, k=2)
+    
+    # Normalization
+    slice_min, slice_max = slice_np.min(), slice_np.max()
+    if slice_max > slice_min:
+        slice_np = (slice_np - slice_min) / (slice_max - slice_min)
+    else:
+        slice_np = np.zeros_like(slice_np)
+        
+    phantom_tensor = torch.from_numpy(slice_np).float()
+    phantom_tensor = phantom_tensor.unsqueeze(0).unsqueeze(0)
+    
+    # Resize to the requested dimensions (e.g., 512x512)
+    phantom_tensor = F.interpolate(phantom_tensor, size=size, mode='bicubic', align_corners=False)
+    
+    return phantom_tensor.squeeze()
+
+
+def get_batch_of_phantoms_brainweb(batch_size, minc_path, size=(512, 512)):
+    """
+    Generates a batch of random 2D slices from the 3D BrainWeb volume.
+    """
+    phantoms = []
+    for _ in range(batch_size):
+        # Extracts a random slice for each item in the batch
+        phantom = get_phantom_brainweb(minc_path=minc_path, size=size)
+        phantoms.append(phantom)
+    
+    # Stacks the slices into a single tensor of shape (batch_size, H, W)
+    return torch.stack(phantoms)
 
 
 def get_phantom(size=(512, 512), type="shepp_logan"):
