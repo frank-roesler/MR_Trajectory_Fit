@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchkbnufft import calc_density_compensation_function
+import torchkbnufft as tkbn
 from mirtorch.linear import NuSense
 import matplotlib.pyplot as plt
 import Nufftbindings.nufftbindings.kbnufft as kbnufft
@@ -39,7 +40,7 @@ class ImageRecon:
             self.dcfnet = UNet1D(in_channels=2, out_channels=1, features=[16, 32, 64, 128, 256])
         else:
             self.dcfnet = FCN1D(channels=[2, 128, 256, 512, 256, 128, 1], kernel_size=21)
-        dcfdict = torch.load(f"trained_models/dcfnet_{self.dcfnet.name}.pt", map_location=self.device)
+        dcfdict = torch.load(f"trained_models/dcfnet_general_{self.dcfnet.name}.pt", map_location=self.device)
         self.dcfnet.load_state_dict(dcfdict)
         self.dcfnet.to(self.device)
 
@@ -65,6 +66,16 @@ class ImageRecon:
             return self.reconstruct_img_dcfnet(rosette, sampled)
         return self.reconstruct_img_nudft(rosette, sampled)
 
+    # def reconstruct_img_mirtorch(self, rosette, sampled):
+    #     s0 = torch.ones(1, 1, self.img_size, self.img_size, device=sampled.device) + 0j
+    #     rosette = rosette.squeeze() / self.kmax_img * torch.pi
+    #     dcf = calc_density_compensation_function(rosette.T, (self.img_size, self.img_size)) + 0j
+    #     Nop = NuSense_om(s0, rosette.T.reshape(1, 2, -1), norm=None)
+    #     sampled = sampled.reshape(1, 1, -1)
+    #     I0 = Nop.H * (dcf * sampled)
+    #     I0 = torch.flip(torch.rot90(I0.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
+    #     return I0 * self.normalization
+
     def reconstruct_img_mirtorch(self, rosette, sampled):
         s0 = torch.ones(1, 1, self.img_size, self.img_size, device=sampled.device) + 0j
         rosette = rosette.squeeze().permute(1, 0) / self.kmax_img * torch.pi
@@ -76,11 +87,16 @@ class ImageRecon:
         return I0 * self.normalization
 
     def reconstruct_img_dcfnet(self, rosette, sampled):
-        rosette = rosette.squeeze().permute(1, 0) / self.kmax_img * torch.pi
+        rosette = rosette.squeeze() / self.kmax_img * torch.pi
+        dcf = self.smooth_dcf(rosette).unsqueeze(0).unsqueeze(0) + 0j
         sampled = sampled.reshape(1, 1, -1)
-        dcf = self.dcfnet(rosette[:, : self.timesteps - 1].unsqueeze(0)).squeeze()
-        dcf = torch.cat([dcf.repeat((1, self.n_petals)), torch.zeros(1, 2, device=dcf.device)], dim=-1).unsqueeze(0) + 0j
-        rosette = rosette.permute(1, 0)
+        # dcf = self.dcfnet(rosette.permute(1, 0)[:, : self.timesteps - 1].unsqueeze(0)).squeeze()
+        # dcf = torch.cat([dcf.repeat((1, self.n_petals)), torch.zeros(1, 2, device=dcf.device)], dim=-1).unsqueeze(0) + 0j
+        # plt.figure()
+        # plt.plot(dcf_gpt.real.squeeze()[:-2].cpu().numpy())
+        # plt.plot(dcf.real.squeeze()[:-2].cpu().numpy())
+        # plt.show()
+
         kbnufft.nufft.set_dims(sampled.shape[-1], (self.img_size, self.img_size), device=rosette.device, Nb=1)
         kbnufft.nufft.precompute(rosette)
         I0 = kbnufft.adjoint(rosette, (sampled * dcf).squeeze(0)).unsqueeze(0)
@@ -91,7 +107,7 @@ class ImageRecon:
     def reconstruct_img_nudft(self, rosette, sampled):
         rosette = rosette.squeeze().permute(1, 0)
         sampled = sampled.reshape(-1)
-        dcf = self.pipe_density_compensation(rosette, self.timesteps - 1).reshape(sampled.shape)
+        dcf = self.knn_density_compensation(rosette, self.timesteps - 1).reshape(sampled.shape)
         sampled = sampled * dcf.squeeze()
         coords = torch.linspace(-1, 1, self.img_size, device=rosette.device) * 112
         grid_y, grid_x = torch.meshgrid(coords, coords, indexing="ij")
@@ -117,6 +133,11 @@ class ImageRecon:
             w = w / psf.repeat(n_petals)
         w = 50 * N * n_petals * torch.cat([w, torch.zeros(2, device=rosette.device)], dim=0)
         return w
+
+    def smooth_dcf(self, traj, sigma=0.01):
+        dist = torch.cdist(traj, traj)
+        weights = torch.exp(-(dist**2) / sigma**2)
+        return 0.05 / np.sqrt(sigma) / (weights.sum(dim=-1) + 1e-6)
 
 
 class MySSIMLoss(nn.Module):
@@ -377,7 +398,24 @@ class TrainPlotter:
         self.max_pns_norms = []
         self.pns_losses = []
 
-    def update(self, step, grad_loss, img_loss, slew_loss, pns_loss, total_loss, recon, traj, rosette, gx, gy, t_axis, angles, pns_norm, t_pns):
+    def update(
+        self,
+        step,
+        grad_loss,
+        img_loss,
+        slew_loss,
+        pns_loss,
+        total_loss,
+        recon,
+        traj,
+        rosette,
+        gx,
+        gy,
+        t_axis,
+        angles,
+        pns_norm,
+        t_pns,
+    ):
 
         # Update for loss plot (final_figure.png and train_figure.png), evaluation, checkpoint..
         self.grad_losses.append(grad_loss.detach().item())
@@ -406,6 +444,7 @@ class TrainPlotter:
             # self.ax_single_losses.autoscale_view()
             self.ax_loss.relim()
             self.ax_loss.autoscale_view()
+            self.ax_loss.set_ylim(min(self.img_losses) * 0.7, max(self.img_losses) * 1.5)
 
             recon_to_plot = recon[0] if recon.dim() == 3 else recon
             img = recon_to_plot.abs().detach().cpu().numpy()
@@ -418,10 +457,10 @@ class TrainPlotter:
             self.ax_traj.autoscale_view()
 
             # 4. Plot (convert to numpy for plotting)
-            # self.gx_line.set_ydata(gx.detach().cpu().numpy())
-            # self.gy_line.set_ydata(gy.detach().cpu().numpy())
-            # self.ax_grad.relim()
-            # self.ax_grad.autoscale_view()
+            self.gx_line.set_data(t_axis.detach().cpu().numpy(), gx.detach().cpu().numpy())
+            self.gy_line.set_data(t_axis.detach().cpu().numpy(), gy.detach().cpu().numpy())
+            self.ax_grad.relim()
+            self.ax_grad.autoscale_view()
 
             self.ax_img.set_title(f"Recon[0] (abs) Step {step+1}")
 
@@ -599,12 +638,12 @@ def get_rotation_matrix(angle_radians, device=torch.device("cpu")):
     return rotation_matrix
 
 
-def make_rosette(angles, radii, traj, n_petals, kmax_img, dt, zero_filling=True):
+def make_rosette(angles, traj, n_petals, kmax_img, dt, zero_filling=True):
     rotated_trajectories = [traj]
     for i in range(n_petals - 1):
         rotation_matrix = get_rotation_matrix(angles[i])
         traj = traj @ rotation_matrix.T
-        rotated_trajectories.append(radii[i] * traj)
+        rotated_trajectories.append(traj)
     d_max, dd_max = torch.zeros(1, 2, device=traj.device), torch.zeros(1, 2, device=traj.device)
     for t in rotated_trajectories[:n_petals]:
         d, dd = compute_derivatives(t, dt)

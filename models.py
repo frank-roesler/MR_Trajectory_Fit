@@ -13,7 +13,7 @@ class FourierPulseOpt(nn.Module):
             p[n_coeffs + 1, 1] += 1.0
         elif initialization == "sin":
             p[n_coeffs + 1, 0] += 1.0
-        weights = torch.exp(-0.1 * torch.arange(-n_coeffs, n_coeffs + 1) ** 2)
+        weights = torch.exp(-0.5 * torch.arange(-n_coeffs, n_coeffs + 1) ** 2)
         p = p * weights.unsqueeze(1)
         self.params = torch.nn.Parameter(p)
         k = torch.arange(-n_coeffs, n_coeffs + 1).unsqueeze(0)
@@ -33,7 +33,7 @@ class FourierPulseOpt(nn.Module):
 
 
 class FourierCurve(nn.Module):
-    def __init__(self, tmin, tmax, initial_max=1.0, n_coeffs=51, coeff_lvl=1e-5, angle_offset=0):
+    def __init__(self, tmin, tmax, initial_max=1.0, n_coeffs=31, coeff_lvl=1e-5, angle_lvl=1e-5):
         super().__init__()
         self.scaling = initial_max * 0.5
         self.pulses = nn.ModuleList(
@@ -43,8 +43,7 @@ class FourierCurve(nn.Module):
             ]
         )
         self.name = "FourierCurve"
-        self.angles = torch.nn.Parameter((4 * torch.pi / params["n_petals"] + angle_offset) * torch.ones(params["n_petals"] // 2))
-        self.radii = torch.nn.Parameter(0.8 + 0.2 * torch.rand(params["n_petals"] // 2))
+        self.angles = torch.nn.Parameter(2 * torch.pi / params["n_petals"] * torch.ones(params["n_petals"]) + torch.randn(params["n_petals"]) * angle_lvl)
 
     def to(self, device):
         for pulse in self.pulses:
@@ -54,7 +53,30 @@ class FourierCurve(nn.Module):
     def forward(self, x):
         x = x[:-1, :]
         out = torch.cat([self.pulses[0](x) - self.pulses[0](0), self.pulses[1](x) - self.pulses[1](0)], dim=-1)
-        return out * self.scaling, self.angles, self.radii
+        return out * self.scaling, self.angles
+
+
+class RosetteModel(nn.Module):
+    def __init__(self, tmin, tmax, n_coeffs=31, coeff_lvl=1e-5):
+        super().__init__()
+        self.petals = nn.ModuleList([FourierCurve(tmin, tmax, n_coeffs=n_coeffs, coeff_lvl=coeff_lvl) for _ in range(params["n_petals"])])
+        self.name = "FourierCurve"
+        self.angles = torch.nn.Parameter(2 * torch.pi / params["n_petals"] * torch.ones(params["n_petals"]))
+
+    def to(self, device):
+        for petal in self.petals:
+            petal.to(device)
+        return super().to(device)
+
+    def forward(self, x):
+        out_list = []
+        for petal, angle in zip(self.petals, self.angles):
+            c = torch.cos(angle)
+            s = torch.sin(angle)
+            rotation_matrix = torch.stack([torch.stack([c, -s]), torch.stack([s, c])])
+            out_list.append(petal(x) @ rotation_matrix.T)
+        out = torch.cat(out_list, dim=0)
+        return out
 
 
 class Ellipse(nn.Module):
@@ -175,6 +197,7 @@ class UNet1D(nn.Module):
 
         # Final output conv
         self.final_conv = nn.Conv1d(prev_ch, out_channels, kernel_size=1)
+        self.out_activation = nn.ReLU()  # Ensure non-negative DCF outputs
 
     def forward(self, x):
         skips = []
@@ -204,7 +227,8 @@ class UNet1D(nn.Module):
             x = torch.cat([skip, x], dim=1)
             x = conv(x)
 
-        return self.final_conv(x)
+        x = self.final_conv(x)
+        return self.out_activation(x)  # Apply ReLU to ensure non-negative outputs
 
 
 # x = torch.randn((2, 100))
