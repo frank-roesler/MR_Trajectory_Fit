@@ -5,7 +5,7 @@ export_path = os.path.join("results", datetime.now().strftime("%Y-%m-%d_%H-%M"))
 
 params = {
     "train_steps": 20000,
-    "lr": 2e-4,
+    "lr": 1e-3,
     "grad_loss_weight": 1e-2,
     "slew_loss_weight": 1e-2,
     "pns_loss_weight": 1e-3,

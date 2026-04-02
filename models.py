@@ -13,10 +13,16 @@ class FourierPulseOpt(nn.Module):
             p[n_coeffs + 1, 1] += 1.0
         elif initialization == "sin":
             p[n_coeffs + 1, 0] += 1.0
-        weights = torch.exp(-0.5 * torch.arange(-n_coeffs, n_coeffs + 1) ** 2)
+        k = torch.arange(-n_coeffs, n_coeffs + 1)
+        weight_factor = 10.0
+        weights_left = 1 / (1 + weight_factor * (k + 1) ** 2)
+        weights_right = 1 / (1 + weight_factor * (k - 1) ** 2)
+        weights = torch.ones_like(weights_left)
+        weights[k < 0] = weights_left[k < 0]
+        weights[k > 0] = weights_right[k > 0]
         p = p * weights.unsqueeze(1)
+        k = k.unsqueeze(0)
         self.params = torch.nn.Parameter(p)
-        k = torch.arange(-n_coeffs, n_coeffs + 1).unsqueeze(0)
         self.register_buffer("freqs", 2 * torch.pi * k / (t_max - t_min))
 
     def to(self, device):

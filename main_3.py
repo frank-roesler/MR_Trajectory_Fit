@@ -28,7 +28,7 @@ phantoms = get_batch_of_phantoms(batch_size, size=(params["img_size"], params["i
 fft = compute_initial_fft(phantoms, padding=params["img_size"])
 t = torch.linspace(0, params["duration"], steps=params["timesteps"], device=device).unsqueeze(1)  # (timesteps, 1)
 
-model = FourierCurve(tmin=0, tmax=params["duration"], initial_max=kmax_traj, n_coeffs=params["model_size"], coeff_lvl=1e-2).to(device)  # 1e-2
+model = FourierCurve(tmin=0, tmax=params["duration"], initial_max=kmax_traj, n_coeffs=params["model_size"], coeff_lvl=1e-5).to(device)  # 1e-2
 # model = Ellipse(tmin=0, tmax=params["duration"], initial_max=kmax_traj).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=params["lr"])
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=1000, factor=0.5, min_lr=1e-6, threshold=1e-6, cooldown=100)
@@ -46,7 +46,7 @@ with torch.no_grad():
     traj, angles = model(t)
     rosette, _, _ = make_rosette(angles, traj, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     rosette_init = rosette.clone().to(device)  # for later PSF analysis
-    initial_recon = reconstructor.reconstruct_img(fft, rosette, method="mirtorch")
+    initial_recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
 
 
 # for step in range(params["train_steps"]):
@@ -54,7 +54,7 @@ for step in range(10000):
     traj, _ = model(t)  # (timesteps, 2)
     angles = 2 * torch.pi / params["n_petals"] * torch.ones(params["n_petals"])
     rosette, *derivatives = make_rosette(angles, traj, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
-    recon = reconstructor.reconstruct_img(fft, rosette, method="mirtorch")
+    recon = reconstructor.reconstruct_img(fft, rosette, method="kbnufft")
     # Compute PNS from gradients - fully differentiable
     gx, gy, t_axis = compute_gradients_from_traj(traj, dt, params["gamma"])
 
@@ -85,6 +85,8 @@ for step in range(10000):
         slew_rate = checkpointer.save_checkpoint(model, *derivatives, rosette)
         best_slew_rate = slew_rate.detach().clone()
         plotter.export_figure(export_path)
+        final_plots(phantoms, recon, initial_recon, plotter.total_losses, traj, slew_rate, export=True, export_path=export_path, show=False)
+
     plotter.update(step, grad_loss, image_loss, slew_loss, pns_loss, total_loss, recon, traj, rosette, gx, gy, t_axis, angles, pns_norm, t_pns)
 
 plotter.export_figure(export_path)
