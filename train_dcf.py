@@ -76,7 +76,7 @@ for step in range(1000):
                 # plt.plot(traj[:, 0].detach().cpu(), traj[:, 1].detach().cpu(), linewidth=0.7, marker=".", markersize=3)
                 # plt.show()
                 rosette = rosette / kmax_img * torch.pi
-                dcf = calc_density_compensation_function(rosette.T.cpu(), (params["img_size"], params["img_size"])).abs().squeeze()
+                dcf = calc_density_compensation_function(rosette.T, (params["img_size"], params["img_size"])).abs().squeeze()
                 # rosette = torch.cat([rosette[:, 0], rosette[:, 1]], dim=0)
                 rosette_batch.append(rosette[: params["timesteps"] - 1].detach())
                 # rosette_batch.append(rosette[:-2, :])
