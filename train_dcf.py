@@ -40,17 +40,18 @@ n_epochs = 10
 batch_size = 64
 learning_rate = 5e-4
 dataset = TrajectoryDCFDataset("train_data/")
-dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-dataloader_cycle = cycle(dataloader)
+if len(dataset) > 0:
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    dataloader_cycle = cycle(dataloader)
 optimizer = torch.optim.Adam(dcfnet.parameters(), lr=learning_rate)
 loss_fcns = LossCollection(params["loss_function"])
 
 losses = []
 best_loss = float("inf")
+t0 = time()
 for step in range(1000):
     if step >= len(train_data):
         compute_dcfs = True
-    t0 = time()
     if compute_dcfs:
         with torch.no_grad():
             rosette_batch = []
@@ -76,12 +77,14 @@ for step in range(1000):
                 # plt.plot(traj[:, 0].detach().cpu(), traj[:, 1].detach().cpu(), linewidth=0.7, marker=".", markersize=3)
                 # plt.show()
                 rosette = rosette / kmax_img * torch.pi
-                dcf = calc_density_compensation_function(rosette.T, (params["img_size"], params["img_size"])).abs().squeeze()
+                dcf = calc_density_compensation_function(rosette.T.cpu(), (params["img_size"], params["img_size"])).abs().squeeze()
                 # rosette = torch.cat([rosette[:, 0], rosette[:, 1]], dim=0)
-                rosette_batch.append(rosette[: params["timesteps"] - 1].detach())
+                traj = rosette[: params["timesteps"] - 1]
+                rosette_batch.append(traj.detach())
                 # rosette_batch.append(rosette[:-2, :])
-                dcf_batch.append(dcf[: params["timesteps"] - 1].detach())
-                torch.save((rosette, dcf), f"train_data/{torch.randint(0,10000000,(1,)).item()}.pt")
+                dcf_traj = dcf[: params["timesteps"] - 1]
+                dcf_batch.append(dcf_traj.detach())
+                torch.save((traj, dcf_traj), f"train_data/{torch.randint(0,100000000,(1,)).item()}.pt")
             rosette_batch = torch.stack(rosette_batch, dim=0)
             dcf_batch = torch.stack(dcf_batch, dim=0)
     else:
@@ -109,6 +112,7 @@ for step in range(1000):
         print("Step:", step)
         print("Loss:", loss.detach().cpu().item())
         print("Time", time() - t0)
+        t0 = time()
 
 print("FINAL LOSS", np.mean(losses[-100:]).item())
 
