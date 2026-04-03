@@ -20,7 +20,7 @@ from dcf_utils import (
 )
 from torch.utils.data import DataLoader
 from glob import glob
-from models import UNet1D
+from models import UNet1D, FourierCurve
 import os
 from datetime import datetime
 
@@ -45,6 +45,14 @@ if len(dataset) > 0:
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     dataloader_cycle = cycle(dataloader)
 optimizer = torch.optim.Adam(dcfnet.parameters(), lr=learning_rate)
+model = FourierCurve(
+    tmin=0,
+    tmax=params["duration"],
+    initial_max=kmax_traj,
+    n_coeffs=params["model_size"],
+    coeff_lvl=0.5,
+    angle_lvl=0.0,
+).to(device)
 
 losses = []
 best_loss = float("inf")
@@ -54,19 +62,24 @@ for step in range(n_steps):
         compute_dcfs = True
     if compute_dcfs:
         with torch.no_grad():
-            rosette_batch = get_rosette_batch(batch_size, device=device)
+            t1 = time()
+            rosette_batch = get_rosette_batch(model, batch_size, device=device)
+            print("Generated rosettes in", time() - t1, "seconds")
+            t1 = time()
             dcf_batch = get_dcf_batch(rosette_batch, device=device)
+            print("Computed DCFs in", time() - t1, "seconds")
             petal_batch = get_petal_batch_from_rosette(rosette_batch)
             dcf_petal_batch = get_dcf_petal_batch_from_dcf(dcf_batch)
+            t1 = time()
             for i in range(batch_size):
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 torch.save((petal_batch[i], dcf_petal_batch[i]), os.path.join(data_dir, f"{timestamp}_{i}.pt"))
+            print("Saved batch in", time() - t1, "seconds")
     else:
         petal_batch, dcf_petal_batch = next(dataloader_cycle)
     if step >= n_epochs * len(train_data) / batch_size:
         compute_dcfs = True
     loss, dcf_pred_batch = train_step(dcfnet, optimizer, petal_batch, dcf_petal_batch, device=device)
-
     if loss < 0.99 * best_loss:
         torch.save(dcfnet.state_dict(), os.path.join(f"trained_models/dcfnet_general_{dcfnet.name}.pt"))
         best_loss = loss
@@ -74,6 +87,7 @@ for step in range(n_steps):
     losses.append(loss)
     if compute_dcfs == True or step % 10 == 0:
         plot_loss(losses, step, t0)
+        t0 = time()
 
 print("FINAL LOSS", np.mean(losses[-100:]).item())
 plot_loss(losses, step, t0, block=True)

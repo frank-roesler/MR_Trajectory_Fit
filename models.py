@@ -6,27 +6,31 @@ from params import params
 class FourierPulseOpt(nn.Module):
     """Auxiliary 1d Fourier series. Used in FourierSeries class."""
 
-    def __init__(self, t_min, t_max, n_coeffs=101, initialization="cos", coeff_lvl=1e-5):
+    def __init__(self, t_min, t_max, n_coeffs=11, initialization="cos", coeff_lvl=1e-5):
         super().__init__()
+        self.weight_factor = 20.0
+        self.coeff_lvl = coeff_lvl
+        self.n_coeffs = n_coeffs
+        self.initialization = initialization
         p = coeff_lvl * torch.randn((2 * n_coeffs + 1, 2))
         if initialization == "cos":
             p[n_coeffs + 1, 1] += 1.0
         elif initialization == "sin":
             p[n_coeffs + 1, 0] += 1.0
-        k = torch.arange(-n_coeffs, n_coeffs + 1)
-        weight_factor = 10.0
-        weights_left = 1 / (1 + weight_factor * (k + 1) ** 2)
-        weights_right = 1 / (1 + weight_factor * (k - 1) ** 2)
-        weights = torch.ones_like(weights_left)
-        weights[k < 0] = weights_left[k < 0]
-        weights[k > 0] = weights_right[k > 0]
-        p = p * weights.unsqueeze(1)
-        k = k.unsqueeze(0)
+        self.k = torch.arange(-n_coeffs, n_coeffs + 1)
+        weights_left = 1 / (1 + self.weight_factor * (self.k + 1) ** 2)
+        weights_right = 1 / (1 + self.weight_factor * (self.k - 1) ** 2)
+        self.weights = torch.ones_like(weights_left)
+        self.weights[self.k < 0] = weights_left[self.k < 0]
+        self.weights[self.k > 0] = weights_right[self.k > 0]
+        self.weights = self.weights.unsqueeze(1)
+        p = p * self.weights
         self.params = torch.nn.Parameter(p)
-        self.register_buffer("freqs", 2 * torch.pi * k / (t_max - t_min))
+        self.register_buffer("freqs", 2 * torch.pi * self.k / (t_max - t_min))
 
     def to(self, device):
         # freqs is now a buffer and will be moved automatically
+        self.weights = self.weights.to(device)
         return super().to(device)
 
     def forward(self, x):
@@ -36,6 +40,15 @@ class FourierPulseOpt(nn.Module):
         y_sin = sin_fx @ self.params[:, 0:1]
         y_cos = cos_fx @ self.params[:, 1:]
         return y_sin + y_cos
+
+    def shuffle_coefficients(self):
+        p = self.coeff_lvl * torch.randn((2 * self.n_coeffs + 1, 2), device=self.params.device)
+        if self.initialization == "cos":
+            p[self.n_coeffs + 1, 1] += 1.0
+        elif self.initialization == "sin":
+            p[self.n_coeffs + 1, 0] += 1.0
+        p = p * self.weights
+        self.params.data = p
 
 
 class FourierCurve(nn.Module):
@@ -60,6 +73,11 @@ class FourierCurve(nn.Module):
         x = x[:-1, :]
         out = torch.cat([self.pulses[0](x) - self.pulses[0](0), self.pulses[1](x) - self.pulses[1](0)], dim=-1)
         return out * self.scaling, self.angles
+
+    def shuffle_coefficients(self):
+        with torch.no_grad():
+            for pulse in self.pulses:
+                pulse.shuffle_coefficients()
 
 
 class RosetteModel(nn.Module):

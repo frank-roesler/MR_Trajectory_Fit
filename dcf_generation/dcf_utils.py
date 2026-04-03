@@ -1,7 +1,6 @@
 from torch.utils.data import Dataset, DataLoader
 from glob import glob
 import torch
-from models import DCFNet, FourierCurve, Ellipse, FCN1D, UNet1D
 from params import *
 from utils_3 import make_rosette, get_rotation_matrix
 from torchkbnufft import calc_density_compensation_function
@@ -21,19 +20,12 @@ class TrajectoryDCFDataset(Dataset):
         return petal, dcf
 
 
-def get_rosette_batch(batch_size, device=torch.device("cpu")):
+def get_rosette_batch(model, batch_size, device=torch.device("cpu")):
     rosette_batch = []
     t = torch.linspace(0, params["duration"], steps=params["timesteps"]).unsqueeze(1).to(device)  # (timesteps, 1)
     n_trash = 0
     while len(rosette_batch) < batch_size:
-        model = FourierCurve(
-            tmin=0,
-            tmax=params["duration"],
-            initial_max=kmax_traj,
-            n_coeffs=params["model_size"],
-            coeff_lvl=0.5,
-            angle_lvl=0.0,
-        ).to(device)
+        model.shuffle_coefficients()
         petal, angles = model(t)
         rosette, *derivatives = make_rosette(angles, petal, params["n_petals"], kmax_img, dt, zero_filling=False)
         slew = 1000 / params["gamma"] * derivatives[1]
@@ -74,11 +66,10 @@ def plot_loss(losses, step, t0, block=False):
     plt.semilogy(losses)
     plt.show(block=block)
     plt.pause(0.001)
-    plt.savefig(f"dcf_generation/loss_{step}.png")
+    plt.savefig("dcf_generation/loss_plot.png")
     print("Step:", step)
     print("Loss:", losses[-1])
     print("Time", time() - t0)
-    t0 = time()
 
 
 def plot_final_examples(dcf_batch, dcf_pred_batch):
