@@ -73,7 +73,9 @@ for step in range(n_steps):
             t1 = time()
             for i in range(batch_size):
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                torch.save((petal_batch[i], dcf_petal_batch[i]), os.path.join(data_dir, f"{timestamp}_{i}.pt"))
+                pt = petal_batch[i].detach().cpu().contiguous()
+                dcf = dcf_petal_batch[i].detach().cpu().contiguous()
+                torch.save((pt, dcf), os.path.join(data_dir, f"{timestamp}_{i}.pt"))
             print("Saved batch in", time() - t1, "seconds")
     else:
         petal_batch, dcf_petal_batch = next(dataloader_cycle)
