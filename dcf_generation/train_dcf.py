@@ -1,6 +1,7 @@
 import sys
+import os
 
-sys.path.append("/Users/frankrosler/Desktop/PhD/Python/MIRTorch/")
+sys.path.append(os.getcwd())
 
 import torch
 from params import *
@@ -24,7 +25,7 @@ from models import UNet1D, FourierCurve
 import os
 from datetime import datetime
 
-n_epochs = 10
+n_epochs = 3
 batch_size = 64
 learning_rate = 5e-4
 n_steps = 5000  # total steps. After n_epochs * len(train_data) / batch_size steps, start computing dcfs if not already doing so.
@@ -62,21 +63,15 @@ for step in range(n_steps):
         compute_dcfs = True
     if compute_dcfs:
         with torch.no_grad():
-            t1 = time()
             rosette_batch = get_rosette_batch(model, batch_size, device=device)
-            print("Generated rosettes in", time() - t1, "seconds")
-            t1 = time()
             dcf_batch = get_dcf_batch(rosette_batch, device=device)
-            print("Computed DCFs in", time() - t1, "seconds")
             petal_batch = get_petal_batch_from_rosette(rosette_batch)
             dcf_petal_batch = get_dcf_petal_batch_from_dcf(dcf_batch)
-            t1 = time()
             for i in range(batch_size):
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 pt = petal_batch[i].detach().cpu().contiguous()
                 dcf = dcf_petal_batch[i].detach().cpu().contiguous()
                 torch.save((pt, dcf), os.path.join(data_dir, f"{timestamp}_{i}.pt"))
-            print("Saved batch in", time() - t1, "seconds")
     else:
         petal_batch, dcf_petal_batch = next(dataloader_cycle)
     if step >= n_epochs * len(train_data) / batch_size:
@@ -92,5 +87,11 @@ for step in range(n_steps):
         t0 = time()
 
 print("FINAL LOSS", np.mean(losses[-100:]).item())
-plot_loss(losses, step, t0, block=True)
-plot_final_examples(dcf_batch, dcf_pred_batch)
+plot_loss(losses, step, t0, block=False)
+
+rosette_batch = get_rosette_batch(model, batch_size, device=device)
+dcf_batch = get_dcf_batch(rosette_batch, device=device)
+petal_batch = get_petal_batch_from_rosette(rosette_batch)
+dcf_petal_batch = get_dcf_petal_batch_from_dcf(dcf_batch)
+dcf_pred_batch = dcfnet(petal_batch.permute(0, 2, 1)).squeeze(1)
+plot_final_examples(dcf_petal_batch, dcf_pred_batch)

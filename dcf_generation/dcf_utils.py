@@ -44,7 +44,7 @@ def get_rosette_batch(model, batch_size, device=torch.device("cpu")):
 
 def get_dcf_batch(rosette_batch, device=torch.device("cpu")):
     rosette_batch = rosette_batch.cpu() if device == "mps" else rosette_batch
-    dcf_batch = calc_density_compensation_function(rosette_batch.permute(0, 2, 1), (params["img_size"], params["img_size"])).abs().squeeze()
+    dcf_batch = calc_density_compensation_function(rosette_batch.permute(0, 2, 1).contiguous(), (params["img_size"], params["img_size"])).abs().squeeze()
     return dcf_batch
 
 
@@ -73,8 +73,8 @@ def plot_loss(losses, step, t0, block=False):
 
 
 def plot_final_examples(dcf_batch, dcf_pred_batch):
-    n_plots = min(8, dcf_batch.shape[0])
-    fig, ax = plt.subplots(2, 4, figsize=(13, 6))
+    n_plots = min(12, dcf_batch.shape[0])
+    fig, ax = plt.subplots(3, 4, figsize=(13, 7))
     ax_flat = ax.ravel()
     for i in range(n_plots):
         ax_flat[i].plot(dcf_batch[i, :].detach().cpu(), label="True DCF")
