@@ -89,10 +89,10 @@ class ImageRecon:
 
     def reconstruct_img_dcfnet(self, rosette, sampled):
         rosette = rosette.squeeze() / self.kmax_img * torch.pi
-        dcf = self.smooth_dcf(rosette).unsqueeze(0).unsqueeze(0) + 0j
+        # dcf = self.smooth_dcf(rosette).unsqueeze(0).unsqueeze(0) + 0j
         sampled = sampled.reshape(1, 1, -1)
-        # dcf = self.dcfnet(rosette.permute(1, 0)[:, : self.timesteps - 1].unsqueeze(0)).squeeze()
-        # dcf = torch.cat([dcf.repeat((1, self.n_petals)), torch.zeros(1, 2, device=dcf.device)], dim=-1).unsqueeze(0) + 0j
+        dcf = self.dcfnet(rosette.permute(1, 0)[:, : self.timesteps - 1].unsqueeze(0)).squeeze()
+        dcf = torch.cat([dcf.repeat((1, self.n_petals)), torch.zeros(1, 2, device=dcf.device)], dim=-1).unsqueeze(0) + 0j
         # plt.figure()
         # plt.plot(dcf_gpt.real.squeeze()[:-2].cpu().numpy())
         # plt.plot(dcf.real.squeeze()[:-2].cpu().numpy())

@@ -74,12 +74,12 @@ def plot_loss(losses, step, t0, block=False):
 
 def plot_final_examples(dcf_batch, dcf_pred_batch):
     n_plots = min(12, dcf_batch.shape[0])
-    fig, ax = plt.subplots(3, 4, figsize=(13, 7))
+    fig, ax = plt.subplots(3, 4, figsize=(13, 8))
     ax_flat = ax.ravel()
     for i in range(n_plots):
         ax_flat[i].plot(dcf_batch[i, :].detach().cpu(), label="True DCF")
         ax_flat[i].plot(dcf_pred_batch[i, :].detach().cpu(), label="Predicted DCF")
-        ax_flat[i].legend()
+    ax_flat[0].legend()
     plt.show()
 
 

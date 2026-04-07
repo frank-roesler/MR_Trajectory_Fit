@@ -8,13 +8,13 @@ params = {
     "lr": 1e-3,
     "grad_loss_weight": 1e-2,
     "slew_loss_weight": 1e-2,
-    "pns_loss_weight": 1e-3,
+    "pns_loss_weight": 1e-5,
     "zero_filling": True,
     "timesteps": 101,
     "duration": 0.5,  # ms
     "grad_max": 135,
     "slew_rate": 240,
-    "pns_threshold": 98,
+    "pns_threshold": 100,
     "gamma": 42.575575,  # Gyromagnetic ratio in MHz/T
     "img_size": 512,  # pixels
     "FoV": 224,  # mm

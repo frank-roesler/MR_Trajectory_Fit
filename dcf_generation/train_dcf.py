@@ -25,10 +25,10 @@ from models import UNet1D, FourierCurve
 import os
 from datetime import datetime
 
-n_epochs = 3
-batch_size = 64
+n_epochs = 6
+batch_size = 128
 learning_rate = 5e-4
-n_steps = 5000  # total steps. After n_epochs * len(train_data) / batch_size steps, start computing dcfs if not already doing so.
+n_steps = 4000  # total steps. After n_epochs * len(train_data) / batch_size steps, start computing dcfs if not already doing so.
 compute_dcfs = False
 data_dir = "dcf_generation/train_data/"
 
