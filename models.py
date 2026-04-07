@@ -8,7 +8,7 @@ class FourierPulseOpt(nn.Module):
 
     def __init__(self, t_min, t_max, n_coeffs=11, initialization="cos", coeff_lvl=1e-5):
         super().__init__()
-        self.weight_factor = 20.0
+        self.weight_factor = 50.0
         self.coeff_lvl = coeff_lvl
         self.n_coeffs = n_coeffs
         self.initialization = initialization
@@ -222,6 +222,18 @@ class UNet1D(nn.Module):
         # Final output conv
         self.final_conv = nn.Conv1d(prev_ch, out_channels, kernel_size=1)
         self.out_activation = nn.ReLU()  # Ensure non-negative DCF outputs
+        self.initialize_weights()
+
+    def initialize_weights(self):
+        """
+        Apply Kaiming normal initialization to convolutional layers for better training stability.
+        This helps with gradient flow in the U-Net architecture.
+        """
+        for m in self.modules():
+            if isinstance(m, (nn.Conv1d, nn.ConvTranspose1d)):
+                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
         skips = []

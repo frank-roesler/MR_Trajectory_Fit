@@ -5,7 +5,8 @@ sys.path.append(os.getcwd())
 
 import torch
 from params import *
-import matplotlib.pyplot as plt
+
+# import matplotlib.pyplot as plt
 from time import time
 import numpy as np
 from itertools import cycle

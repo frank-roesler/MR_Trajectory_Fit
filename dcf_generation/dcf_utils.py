@@ -30,7 +30,7 @@ def get_rosette_batch(model, batch_size, device=torch.device("cpu")):
         rosette, *derivatives = make_rosette(angles, petal, params["n_petals"], kmax_img, dt, zero_filling=False)
         slew = 1000 / params["gamma"] * derivatives[1]
 
-        if torch.max(slew) > 300:
+        if torch.max(slew) > 400:
             n_trash += 1
             continue
         # print(slew.max().item())
