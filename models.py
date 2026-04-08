@@ -55,6 +55,7 @@ class FourierCurve(nn.Module):
     def __init__(self, tmin, tmax, initial_max=1.0, n_coeffs=31, coeff_lvl=1e-5, angle_lvl=1e-5):
         super().__init__()
         self.scaling = initial_max * 0.5
+        self.angle_lvl = angle_lvl
         self.pulses = nn.ModuleList(
             [
                 FourierPulseOpt(tmin, tmax, n_coeffs=n_coeffs, initialization="cos", coeff_lvl=coeff_lvl),
@@ -76,6 +77,8 @@ class FourierCurve(nn.Module):
 
     def shuffle_coefficients(self):
         with torch.no_grad():
+            if self.angle_lvl > 0:
+                self.angles.data = 2 * torch.pi / params["n_petals"] * torch.ones_like(self.angles) + torch.randn(self.angles.shape) * self.angle_lvl
             for pulse in self.pulses:
                 pulse.shuffle_coefficients()
 

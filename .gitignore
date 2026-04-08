@@ -11,6 +11,9 @@ results_loss_compare/
 */.DS_Store
 */*/.DS_Store
 train_data/
+train_data.nosync/
+*/train_data/
+*/train_data.nosync/
 *.zip
 *.asc
 *.log

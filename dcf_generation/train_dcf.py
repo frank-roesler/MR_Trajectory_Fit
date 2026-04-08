@@ -29,7 +29,7 @@ from datetime import datetime
 n_epochs = 6
 batch_size = 128
 learning_rate = 5e-4
-n_steps = 4000  # total steps. After n_epochs * len(train_data) / batch_size steps, start computing dcfs if not already doing so.
+n_steps = 4000  # total steps. After [n_epochs*len(train_data)/batch_size] steps, start computing dcfs if not already doing so.
 compute_dcfs = False
 data_dir = "dcf_generation/train_data/"
 
@@ -53,7 +53,7 @@ model = FourierCurve(
     initial_max=kmax_traj,
     n_coeffs=params["model_size"],
     coeff_lvl=0.5,
-    angle_lvl=0.0,
+    angle_lvl=0.05,
 ).to(device)
 
 losses = []
