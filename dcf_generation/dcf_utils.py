@@ -34,7 +34,8 @@ def get_rosette_batch(model, batch_size, device=torch.device("cpu")):
             n_trash += 1
             continue
         # print(slew.max().item())
-        # plot_example(petal)
+        # plot_example(rosette, block=False)
+        # plot_example(petal, block=False)
 
         rosette_batch.append(rosette / kmax_img * torch.pi)
     print("Thrown away:", n_trash)
@@ -56,9 +57,9 @@ def get_petal_batch_from_rosette(rosette_batch):
     return rosette_batch[:, : params["timesteps"] - 1, :]
 
 
-def plot_example(petal):
-    plt.plot(petal[:, 0].detach().cpu(), petal[:, 1].detach().cpu(), linewidth=0.7, marker=".", markersize=3)
-    plt.show()
+def plot_example(petal, block=True):
+    plt.plot(petal[:, 0].detach().cpu(), petal[:, 1].detach().cpu(), linewidth=0.7, marker=".", markersize=1)
+    plt.show(block=block)
 
 
 def plot_loss(losses, step, t0, block=False):

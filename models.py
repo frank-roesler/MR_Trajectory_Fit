@@ -78,7 +78,7 @@ class FourierCurve(nn.Module):
     def shuffle_coefficients(self):
         with torch.no_grad():
             if self.angle_lvl > 0:
-                self.angles.data = 2 * torch.pi / params["n_petals"] * torch.ones_like(self.angles) + torch.randn(self.angles.shape) * self.angle_lvl
+                self.angles.data = 2 * torch.pi / params["n_petals"] * torch.ones_like(self.angles) + torch.randn_like(self.angles) * self.angle_lvl
             for pulse in self.pulses:
                 pulse.shuffle_coefficients()
 
@@ -185,7 +185,7 @@ class ConvBlock(nn.Module):
 
 
 class UNet1D(nn.Module):
-    def __init__(self, in_channels=2, out_channels=1, features=[16, 32, 64]):
+    def __init__(self, in_channels=2, out_channels=1, features=[16, 32, 64], kernel_size=3):
         """
         Simple 1D U-Net.
 
@@ -203,23 +203,24 @@ class UNet1D(nn.Module):
         self.encoders = nn.ModuleList()
         self.decoders = nn.ModuleList()
         self.pools = nn.ModuleList()
+        self.kernel_size = kernel_size
 
         # Encoder path
         prev_ch = in_channels
         for f in features:
-            self.encoders.append(ConvBlock(prev_ch, f))
+            self.encoders.append(ConvBlock(prev_ch, f, kernel_size=kernel_size))
             self.pools.append(nn.MaxPool1d(kernel_size=2, stride=2))
             prev_ch = f
 
         # Bottleneck
-        self.bottleneck = ConvBlock(prev_ch, prev_ch * 2)
+        self.bottleneck = ConvBlock(prev_ch, prev_ch * 2, kernel_size=kernel_size)
 
         # Decoder path
         rev_features = features[::-1]
         prev_ch = prev_ch * 2
         for f in rev_features:
             self.decoders.append(nn.ConvTranspose1d(prev_ch, f, kernel_size=2, stride=2))
-            self.decoders.append(ConvBlock(prev_ch, f))
+            self.decoders.append(ConvBlock(prev_ch, f, kernel_size=kernel_size))
             prev_ch = f
 
         # Final output conv
