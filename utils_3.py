@@ -26,10 +26,6 @@ import random
 
 class ImageRecon:
     def __init__(self, params, kmax_img, dcfnet_path):
-        """medhod must be one of: ['kbnufft', 'mirtorch', 'nudft'].
-        'kbnufft': uses dcfnet for fast differentiable dcf computation,
-        'mirtorch': uses calc_density_compensation_function from torchkbnufft. Not differentiable.
-        'nudft': very slow and should only be used for debugging."""
         self.device = get_device()
         self.kmax_img = kmax_img
         self.img_size = params["img_size"]
@@ -79,8 +75,12 @@ class ImageRecon:
         sampled = sampled.reshape(1, 1, -1)
         kbnufft.nufft.set_dims(sampled.shape[-1], (self.img_size, self.img_size), device=rosette.device, Nb=1)
         kbnufft.nufft.precompute(rosette)
+
+        # dcf = self.dcfnet(rosette.permute(1, 0)[:, : self.timesteps - 1].unsqueeze(0)).squeeze()
+        # dcf = torch.cat([dcf.repeat((1, self.n_petals)), torch.zeros(1, 2, device=dcf.device)], dim=-1).unsqueeze(0) + 0j
         dcf = self.dcfnet(rosette[:-2, :].permute(1, 0).unsqueeze(0)).squeeze() + 0j
         dcf = torch.cat([dcf, torch.zeros(2)], dim=-1)
+
         dcf = self.normalize_dcf(dcf.view(1, 1, -1), rosette, (self.img_size, self.img_size))
         I0 = kbnufft.adjoint(rosette, (sampled * dcf).squeeze(0)).unsqueeze(0)
         I0 = torch.flip(torch.rot90(I0.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
