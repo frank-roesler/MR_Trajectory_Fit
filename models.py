@@ -5,21 +5,31 @@ import torch.nn as nn
 class FourierPulseOpt(nn.Module):
     """Auxiliary 1d Fourier series. Used in FourierSeries class."""
 
-    def __init__(self, t_min, t_max, n_coeffs=101, initialization="cos", coeff_lvl=1e-5):
+    def __init__(self, t_min, t_max, n_coeffs=11, initialization="cos", coeff_lvl=1e-5):
         super().__init__()
+        self.weight_factor = 50.0
+        self.coeff_lvl = coeff_lvl
+        self.n_coeffs = n_coeffs
+        self.initialization = initialization
         p = coeff_lvl * torch.randn((2 * n_coeffs + 1, 2))
         if initialization == "cos":
-            p[n_coeffs + 1, 1] = 1.0
+            p[n_coeffs + 1, 1] += 1.0
         elif initialization == "sin":
-            p[n_coeffs + 1, 0] = 1.0
-        weights = torch.exp(-0.1 * torch.arange(-n_coeffs, n_coeffs + 1) ** 2)
-        p = p * weights.unsqueeze(1)
+            p[n_coeffs + 1, 0] += 1.0
+        self.k = torch.arange(-n_coeffs, n_coeffs + 1)
+        weights_left = 1 / (1 + self.weight_factor * (self.k + 1) ** 2)
+        weights_right = 1 / (1 + self.weight_factor * (self.k - 1) ** 2)
+        self.weights = torch.ones_like(weights_left)
+        self.weights[self.k < 0] = weights_left[self.k < 0]
+        self.weights[self.k > 0] = weights_right[self.k > 0]
+        self.weights = self.weights.unsqueeze(1)
+        p = p * self.weights
         self.params = torch.nn.Parameter(p)
-        k = torch.arange(-n_coeffs, n_coeffs + 1).unsqueeze(0)
-        self.register_buffer('freqs', 2 * torch.pi * k / (t_max - t_min))
+        self.register_buffer("freqs", 2 * torch.pi * self.k / (t_max - t_min))
 
     def to(self, device):
         # freqs is now a buffer and will be moved automatically
+        self.weights = self.weights.to(device)
         return super().to(device)
 
     def forward(self, x):
@@ -30,11 +40,22 @@ class FourierPulseOpt(nn.Module):
         y_cos = cos_fx @ self.params[:, 1:]
         return y_sin + y_cos
 
+    def jitter_coefficients(self):
+        p = self.coeff_lvl * torch.randn((2 * self.n_coeffs + 1, 2), device=self.params.device)
+        if self.initialization == "cos":
+            p[self.n_coeffs + 1, 1] += 1.0
+        elif self.initialization == "sin":
+            p[self.n_coeffs + 1, 0] += 1.0
+        p = p * self.weights
+        self.params.data = p
+
 
 class FourierCurve(nn.Module):
-    def __init__(self, tmin, tmax, initial_max=1.0, n_coeffs=51, coeff_lvl=1e-5):
+    def __init__(self, tmin, tmax, n_petals, initial_max=1.0, n_coeffs=51, coeff_lvl=1e-5, angle_lvl=1e-5):
         super().__init__()
         self.scaling = initial_max * 0.5
+        self.n_petals = n_petals
+        self.angle_lvl = angle_lvl
         self.pulses = nn.ModuleList(
             [
                 FourierPulseOpt(tmin, tmax, n_coeffs=n_coeffs, initialization="cos", coeff_lvl=coeff_lvl),
@@ -42,6 +63,7 @@ class FourierCurve(nn.Module):
             ]
         )
         self.name = "FourierCurve"
+        self.angles = torch.nn.Parameter(2 * torch.pi / self.n_petals * torch.ones(self.n_petals) + torch.randn(self.n_petals) * angle_lvl)
 
     def to(self, device):
         for pulse in self.pulses:
@@ -53,6 +75,13 @@ class FourierCurve(nn.Module):
         out = torch.cat([self.pulses[0](x) - self.pulses[0](0), self.pulses[1](x) - self.pulses[1](0)], dim=-1)
         return out * self.scaling
 
+    def jitter_coefficients(self):
+        with torch.no_grad():
+            if self.angle_lvl > 0:
+                self.angles.data = 2 * torch.pi / self.n_petals * torch.ones_like(self.angles) + torch.randn_like(self.angles) * self.angle_lvl
+            for pulse in self.pulses:
+                pulse.jitter_coefficients()
+
 
 class Ellipse(nn.Module):
     def __init__(self, tmin, tmax, initial_max=1.0):
@@ -62,7 +91,7 @@ class Ellipse(nn.Module):
         self.name = "Ellipse"
         self.tmin = tmin
         self.tmax = tmax
-        self.register_buffer('k', torch.tensor(2 * torch.pi / (tmax - tmin)))
+        self.register_buffer("k", torch.tensor(2 * torch.pi / (tmax - tmin)))
 
     def to(self, device):
         return super().to(device)
@@ -133,7 +162,7 @@ class ConvBlock(nn.Module):
 
 
 class UNet1D(nn.Module):
-    def __init__(self, in_channels=2, out_channels=1, features=[16, 32, 64]):
+    def __init__(self, in_channels=2, out_channels=1, features=[16, 32, 64], kernel_size=3):
         """
         Simple 1D U-Net.
 
@@ -151,27 +180,42 @@ class UNet1D(nn.Module):
         self.encoders = nn.ModuleList()
         self.decoders = nn.ModuleList()
         self.pools = nn.ModuleList()
+        self.kernel_size = kernel_size
+        self.features = features
 
         # Encoder path
         prev_ch = in_channels
         for f in features:
-            self.encoders.append(ConvBlock(prev_ch, f))
+            self.encoders.append(ConvBlock(prev_ch, f, kernel_size=kernel_size))
             self.pools.append(nn.MaxPool1d(kernel_size=2, stride=2))
             prev_ch = f
 
         # Bottleneck
-        self.bottleneck = ConvBlock(prev_ch, prev_ch * 2)
+        self.bottleneck = ConvBlock(prev_ch, prev_ch * 2, kernel_size=kernel_size)
 
         # Decoder path
         rev_features = features[::-1]
         prev_ch = prev_ch * 2
         for f in rev_features:
             self.decoders.append(nn.ConvTranspose1d(prev_ch, f, kernel_size=2, stride=2))
-            self.decoders.append(ConvBlock(prev_ch, f))
+            self.decoders.append(ConvBlock(prev_ch, f, kernel_size=kernel_size))
             prev_ch = f
 
         # Final output conv
         self.final_conv = nn.Conv1d(prev_ch, out_channels, kernel_size=1)
+        self.out_activation = nn.ReLU()  # Ensure non-negative DCF outputs
+        self.initialize_weights()
+
+    def initialize_weights(self):
+        """
+        Apply Kaiming normal initialization to convolutional layers for better training stability.
+        This helps with gradient flow in the U-Net architecture.
+        """
+        for m in self.modules():
+            if isinstance(m, (nn.Conv1d, nn.ConvTranspose1d)):
+                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
         skips = []
@@ -201,7 +245,8 @@ class UNet1D(nn.Module):
             x = torch.cat([skip, x], dim=1)
             x = conv(x)
 
-        return self.final_conv(x)
+        x = self.final_conv(x)
+        return self.out_activation(x)  # Apply ReLU to ensure non-negative outputs
 
 
 # x = torch.randn((2, 100))
