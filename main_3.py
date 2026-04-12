@@ -28,7 +28,6 @@ dcfnet_path = f"trained_models/dcfnet_512_unet.pt"
 
 phantoms = get_batch_of_phantoms_brainweb(batch_size, minc_path="t1_icbm_normal_1mm_pn3_rf20.mnc", size=(params["img_size"], params["img_size"])).to(device)
 fft = compute_initial_fft(phantoms, padding=params["img_size"])
-rotation_matrix = get_rotation_matrix(params["n_petals"], device=device).detach()
 t = torch.linspace(0, params["duration"], steps=params["timesteps"], device=device).unsqueeze(1)  # (timesteps, 1)
 
 model = FourierCurve(tmin=0, tmax=params["duration"], n_petals=params["n_petals"], initial_max=kmax_traj, n_coeffs=params["model_size"], coeff_lvl=1e-3).to(device)  # 1e-2
@@ -46,7 +45,7 @@ best_traj = None
 best_slew_rate = None
 
 with torch.no_grad():
-    rosette, _, _ = make_rosette(model(t), rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
+    rosette, _, _ = make_rosette(model.angles, model(t), params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     rosette_init = rosette.clone().to(device)  # for later PSF analysis
     initial_recon = reconstructor.reconstruct_img(fft, rosette, method="dcfnet")
     initial_recon_mirtorch = reconstructor.reconstruct_img(fft, rosette, method="mirtorch")
@@ -55,7 +54,7 @@ with torch.no_grad():
 # for step in range(params["train_steps"]):
 for step in range(1000):
     traj = model(t)  # (timesteps, 2)
-    rosette, *derivatives = make_rosette(traj, rotation_matrix, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
+    rosette, *derivatives = make_rosette(model.angles, traj, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     recon = reconstructor.reconstruct_img(fft, rosette, method="dcfnet")
     # Compute PNS from gradients - fully differentiable
     gx, gy, t_axis = compute_gradients_from_traj(traj, dt, params["gamma"])
