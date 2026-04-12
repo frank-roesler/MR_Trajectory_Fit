@@ -12,7 +12,7 @@ import os
 from PIL import Image
 import numpy as np
 from mirtorch_pkg import NuSense_om, NuSense
-from models import DCFNet, UNet1D, FCN1D
+from models import UNet1D
 import json
 from os.path import join, dirname
 from scipy.signal import find_peaks
@@ -25,7 +25,7 @@ import random
 
 
 class ImageRecon:
-    def __init__(self, params, kmax_img, normalization, dcfnet="unet"):
+    def __init__(self, params, kmax_img, dcfnet_path):
         """medhod must be one of: ['kbnufft', 'mirtorch', 'nudft'].
         'kbnufft': uses dcfnet for fast differentiable dcf computation,
         'mirtorch': uses calc_density_compensation_function from torchkbnufft. Not differentiable.
@@ -33,16 +33,11 @@ class ImageRecon:
         self.device = get_device()
         self.kmax_img = kmax_img
         self.img_size = params["img_size"]
-        self.normalization = normalization
         self.timesteps = params["timesteps"]
         self.zero_filling = params["zero_filling"]
         self.n_petals = params["n_petals"]
-        if dcfnet == "unet":
-            self.dcfnet = UNet1D(in_channels=2, out_channels=1, features=[16, 32, 64, 128, 256])
-        else:
-            self.dcfnet = FCN1D(channels=[2, 128, 256, 512, 256, 128, 1], kernel_size=21)
-        dcfdict = torch.load(f"trained_models/dcfnet_{self.dcfnet.name}.pt", map_location=self.device)
-        # dcfdict = torch.load("trained_models/dcfnet_512_unet.pt", map_location=self.device)
+        dcfdict, kernel_size, features = torch.load(dcfnet_path, map_location=self.device)
+        self.dcfnet = UNet1D(in_channels=2, out_channels=1, features=features, kernel_size=kernel_size)
         self.dcfnet.load_state_dict(dcfdict)
         self.dcfnet.to(self.device)
 
@@ -55,7 +50,7 @@ class ImageRecon:
             sampled[:, :, -2:] *= 0
         return rosette, sampled
 
-    def reconstruct_img(self, fft, rosette, method="kbnufft"):
+    def reconstruct_img(self, fft, rosette, method="dcfnet"):
         if fft.dim() == 4 and fft.shape[0] > 1:
             recons = []
             for b in range(fft.shape[0]):
@@ -64,7 +59,7 @@ class ImageRecon:
         rosette, sampled = self.sample_k_space_values(fft, rosette)
         if method == "mirtorch":
             return self.reconstruct_img_mirtorch(rosette, sampled)
-        if method == "kbnufft":
+        if method == "dcfnet":
             return self.reconstruct_img_dcfnet(rosette, sampled)
         return self.reconstruct_img_nudft(rosette, sampled)
 
@@ -72,29 +67,29 @@ class ImageRecon:
         s0 = torch.ones(1, 1, self.img_size, self.img_size, device=sampled.device) + 0j
         rosette = rosette.squeeze().permute(1, 0) / self.kmax_img * torch.pi
         sampled = sampled.reshape(1, 1, -1)
-        dcf = calc_density_compensation_function(rosette, (self.img_size, self.img_size)) + 0j
         Nop = NuSense_om(s0, rosette.reshape(1, 2, -1), norm=None)
+        dcf = calc_density_compensation_function(rosette, (self.img_size, self.img_size)) + 0j
+        dcf = self.normalize_dcf_mirtorch(dcf.view(1, 1, -1), Nop)
         I0 = Nop.H * (dcf * sampled)
         I0 = torch.flip(torch.rot90(I0.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
-        return I0 * self.normalization
+        return I0
 
     def reconstruct_img_dcfnet(self, rosette, sampled):
-        rosette = rosette.squeeze().permute(1, 0) / self.kmax_img * torch.pi
+        rosette = rosette.squeeze() / self.kmax_img * torch.pi
         sampled = sampled.reshape(1, 1, -1)
-        dcf = self.dcfnet(rosette[:, : self.timesteps - 1].unsqueeze(0)).squeeze()
-        dcf = torch.cat([dcf.repeat((1, self.n_petals)), torch.zeros(1, 2, device=dcf.device)], dim=-1).unsqueeze(0) + 0j
-        rosette = rosette.permute(1, 0)
         kbnufft.nufft.set_dims(sampled.shape[-1], (self.img_size, self.img_size), device=rosette.device, Nb=1)
         kbnufft.nufft.precompute(rosette)
+        dcf = self.dcfnet(rosette[:-2, :].permute(1, 0).unsqueeze(0)).squeeze() + 0j
+        dcf = torch.cat([dcf, torch.zeros(2)], dim=-1)
+        dcf = self.normalize_dcf(dcf.view(1, 1, -1), rosette, (self.img_size, self.img_size))
         I0 = kbnufft.adjoint(rosette, (sampled * dcf).squeeze(0)).unsqueeze(0)
         I0 = torch.flip(torch.rot90(I0.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
-        I0 = I0 * self.normalization
         return I0
 
     def reconstruct_img_nudft(self, rosette, sampled):
         rosette = rosette.squeeze().permute(1, 0)
         sampled = sampled.reshape(-1)
-        dcf = self.pipe_density_compensation(rosette, self.timesteps - 1).reshape(sampled.shape)
+        dcf = self.pipe_dcf_logparam(rosette).reshape(sampled.shape)
         sampled = sampled * dcf.squeeze()
         coords = torch.linspace(-1, 1, self.img_size, device=rosette.device) * 112
         grid_y, grid_x = torch.meshgrid(coords, coords, indexing="ij")
@@ -103,23 +98,38 @@ class ImageRecon:
         exponent = img_coords_flat @ rosette
         exponent = 2 * torch.pi * 1j * exponent
         nudft = torch.exp(exponent) @ sampled
-        img = nudft.view(self.img_size, self.img_size).abs() * self.normalization
+        img = nudft.view(self.img_size, self.img_size).abs()
         return img
 
-    def pipe_density_compensation(self, rosette, num_iters=10):
-        rosette = rosette[:, :-2]
-        traj = rosette[..., : self.timesteps]
-        n_petals = rosette.shape[-1] // self.timesteps
-        N = traj.shape[-1]
-        w = torch.ones(n_petals * N, device=rosette.device)
-        for _ in range(num_iters):
-            psf = torch.zeros(N, device=rosette.device)
-            for i in range(N):
-                dist_sq = torch.sum((rosette - rosette[:, i : i + 1]) ** 2, axis=0)
-                psf[i] = torch.sum(w / (dist_sq + 1e-6))
-            w = w / psf.repeat(n_petals)
-        w = 50 * N * n_petals * torch.cat([w, torch.zeros(2, device=rosette.device)], dim=0)
-        return w
+    def normalize_dcf(self, dcf, ktraj, im_size):
+        x = torch.ones(1, *im_size, device=dcf.device) + 0j
+        k = kbnufft.forward(ktraj, x)
+        x_rec = kbnufft.adjoint(ktraj, k * dcf.squeeze(0)).abs()
+        scale = x_rec.sum() / (x_rec**2).sum()
+        return dcf * scale
+
+    def normalize_dcf_mirtorch(self, dcf, Nop):
+        x = torch.ones(1, 1, self.img_size, self.img_size, device=dcf.device) + 0j
+        k = Nop * x
+        x_rec = Nop.H * (dcf * k)
+        scale = x_rec.sum() / (x_rec**2).sum()
+        return dcf * scale
+
+    def pipe_dcf_logparam(self, ktraj, n_iter=25, eps=1e-8, w_start=None):
+        n_samples = ktraj.shape[-2]
+        if w_start == None:
+            log_w = torch.zeros((1, n_samples), device=ktraj.device, dtype=ktraj.dtype) + 0j
+        else:
+            log_w = torch.log(w_start.abs() + eps) + 0j
+        for _ in range(n_iter):
+            w = torch.exp(log_w)
+            Aw = kbnufft.adjoint(ktraj, w)
+            AAw = kbnufft.forward(ktraj, Aw)
+            # print(_, torch.norm(AAw - 1).item())
+            update = torch.log(AAw.abs() + eps)
+            log_w = log_w - update
+        dcf = torch.exp(log_w).real
+        return dcf
 
 
 class MySSIMLoss(nn.Module):
@@ -573,32 +583,32 @@ def get_device():
 
 def get_phantom_brainweb(minc_path, size=(512, 512)):
     """
-    Loads a BrainWeb .mnc volume, extracts a random 2D slice, 
+    Loads a BrainWeb .mnc volume, extracts a random 2D slice,
     and converts it into a PyTorch tensor.
     """
-    
+
     img = nib.load(minc_path)
     volume = img.get_fdata()  # (X, Y, Z)
-    
+
     # Random slice selection from the middle third of the volume
     z_dim = volume.shape[0]
     slice_idx = random.randint(z_dim // 3, 2 * z_dim // 3)
     slice_np = volume[slice_idx, :, :]
     slice_np = np.rot90(slice_np, k=2)
-    
+
     # Normalization
     slice_min, slice_max = slice_np.min(), slice_np.max()
     if slice_max > slice_min:
         slice_np = (slice_np - slice_min) / (slice_max - slice_min)
     else:
         slice_np = np.zeros_like(slice_np)
-        
+
     phantom_tensor = torch.from_numpy(slice_np).float()
     phantom_tensor = phantom_tensor.unsqueeze(0).unsqueeze(0)
-    
+
     # Resize to the requested dimensions (e.g., 512x512)
-    phantom_tensor = F.interpolate(phantom_tensor, size=size, mode='bicubic', align_corners=False)
-    
+    phantom_tensor = F.interpolate(phantom_tensor, size=size, mode="bicubic", align_corners=False)
+
     return phantom_tensor.squeeze()
 
 
@@ -611,7 +621,7 @@ def get_batch_of_phantoms_brainweb(batch_size, minc_path, size=(512, 512)):
         # Extracts a random slice for each item in the batch
         phantom = get_phantom_brainweb(minc_path=minc_path, size=size)
         phantoms.append(phantom)
-    
+
     # Stacks the slices into a single tensor of shape (batch_size, H, W)
     return torch.stack(phantoms)
 
@@ -639,22 +649,23 @@ def get_batch_of_phantoms(batch_size, size=(512, 512), type="shepp_logan"):
     return torch.stack(phantoms)
 
 
-def get_rotation_matrix(n_petals, device=torch.device("cpu")):
-    angle_radians = 2 * torch.pi / n_petals
-    angle_radians = torch.tensor([angle_radians], device=device)
-    rotation_matrix = torch.tensor(
+def get_rotation_matrix(angle_radians):
+    c = torch.cos(angle_radians)
+    s = torch.sin(angle_radians)
+
+    rotation_matrix = torch.stack(
         [
-            [torch.cos(angle_radians), -torch.sin(angle_radians)],
-            [torch.sin(angle_radians), torch.cos(angle_radians)],
-        ],
-        device=device,
+            torch.stack([c, -s]),
+            torch.stack([s, c]),
+        ]
     )
     return rotation_matrix
 
 
-def make_rosette(traj, rotation_matrix, n_petals, kmax_img, dt, zero_filling=True):
+def make_rosette(angles, traj, n_petals, kmax_img, dt, zero_filling=True):
     rotated_trajectories = [traj]
     for i in range(n_petals - 1):
+        rotation_matrix = get_rotation_matrix(angles[i])
         traj = traj @ rotation_matrix.T
         rotated_trajectories.append(traj)
     d_max, dd_max = torch.zeros(1, 2, device=traj.device), torch.zeros(1, 2, device=traj.device)

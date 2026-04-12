@@ -26,6 +26,5 @@ params = {
 
 kmax_traj = params["res"] / (2 * params["FoV"])  # 1/m
 kmax_img = params["img_size"] / (2 * params["FoV"])  # 1/m
-#print(f"kmax_traj: {kmax_traj:.4f} 1/m, kmax_img: {kmax_img:.4f} 1/m")
+# print(f"kmax_traj: {kmax_traj:.4f} 1/m, kmax_img: {kmax_img:.4f} 1/m")
 dt = params["duration"] / (params["timesteps"] - 1)
-normalization = 4 / params["img_size"] ** 2
