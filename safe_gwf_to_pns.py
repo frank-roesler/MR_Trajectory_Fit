@@ -100,9 +100,7 @@ class SAFE_PNS:
         dgdt_padded = torch.stack((dgdt_padded, dgdt_padded.abs(), dgdt_padded), dim=1)
         dgdt_hat = fft(dgdt_padded, dim=0)
         K = fftfreq(dgdt.shape[0] + 2 * pad, d=self.dt, device=dgdt.device).unsqueeze(1) * (2 * torch.pi)
-        one = torch.tensor(1.0, device=dgdt.device, dtype=dgdt_hat.dtype)
-        j = torch.tensor(1j, device=dgdt.device, dtype=dgdt_hat.dtype)
-        lp_hat = dgdt_hat / (one + j * K.to(dgdt_hat.dtype) * tau_tensor.to(dgdt_hat.dtype))
+        lp_hat = dgdt_hat / (1.0 + 1j * K.to(dgdt_hat.dtype) * tau_tensor.to(dgdt_hat.dtype))
         lp = ifft(lp_hat, dim=0)[pad:-pad].real.abs()
         stim = torch.sum(a_tensor * lp, dim=1) / hw_axis["stim_thresh"] * hw_axis["g_scale"] * 100.0
         return stim
@@ -118,9 +116,9 @@ class SAFE_PNS:
             dt: sampling interval in ms
         """
         N = len(dgdt)
-        T = dt * N
+        T = self.dt * N
         t = torch.arange(N, device=dgdt.device) * self.dt
-        const = dt / (tau * (1 - math.exp(-T / tau)))
+        const = self.dt / (tau * (1 - math.exp(-T / tau)))
         decay = torch.exp(-t / tau)
         fw = const * irfft(rfft(dgdt) * rfft(decay), n=N)
         return fw

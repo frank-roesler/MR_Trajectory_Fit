@@ -32,7 +32,7 @@ class FourierPulseOpt(nn.Module):
 
 
 class FourierCurve(nn.Module):
-    def __init__(self, tmin, tmax, initial_max=1.0, n_coeffs=51, coeff_lvl=1e-5):
+    def __init__(self, tmin, tmax, n_petals, initial_max=1.0, n_coeffs=51, coeff_lvl=1e-5):
         super().__init__()
         self.scaling = initial_max * 0.5
         self.pulses = nn.ModuleList(
@@ -42,6 +42,7 @@ class FourierCurve(nn.Module):
             ]
         )
         self.name = "FourierCurve"
+        self.angles = torch.nn.Parameter(torch.full((n_petals,), 2 * torch.pi / n_petals))
 
     def to(self, device):
         for pulse in self.pulses:

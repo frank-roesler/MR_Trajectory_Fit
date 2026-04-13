@@ -639,22 +639,16 @@ def get_batch_of_phantoms(batch_size, size=(512, 512), type="shepp_logan"):
     return torch.stack(phantoms)
 
 
-def get_rotation_matrix(n_petals, device=torch.device("cpu")):
-    angle_radians = 2 * torch.pi / n_petals
-    angle_radians = torch.tensor([angle_radians], device=device)
-    rotation_matrix = torch.tensor(
-        [
-            [torch.cos(angle_radians), -torch.sin(angle_radians)],
-            [torch.sin(angle_radians), torch.cos(angle_radians)],
-        ],
-        device=device,
-    )
-    return rotation_matrix
+def get_rotation_matrix(angle):
+    c, s = torch.cos(angle), torch.sin(angle)
+    return torch.stack([torch.stack([c, -s]), torch.stack([s, c])])
 
 
-def make_rosette(traj, rotation_matrix, n_petals, kmax_img, dt, zero_filling=True):
+def make_rosette(model, traj, n_petals, kmax_img, dt, zero_filling=True):
     rotated_trajectories = [traj]
     for i in range(n_petals - 1):
+        angle = model.angles[i]
+        rotation_matrix = get_rotation_matrix(angle)
         traj = traj @ rotation_matrix.T
         rotated_trajectories.append(traj)
     d_max, dd_max = torch.zeros(1, 2, device=traj.device), torch.zeros(1, 2, device=traj.device)
