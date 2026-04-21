@@ -25,7 +25,7 @@ torch.set_printoptions(threshold=100000)
 
 device = get_device()
 
-batch_size = 1
+batch_size = 5
 phantoms = get_batch_of_phantoms_brainweb(batch_size, minc_path="t1_icbm_normal_1mm_pn3_rf20.mnc", size=(params["img_size"], params["img_size"])).to(device)
 fft = compute_initial_fft(phantoms, padding=params["img_size"])
 t = torch.linspace(0, params["duration"], steps=params["timesteps"], device=device).unsqueeze(1)  # (timesteps, 1)

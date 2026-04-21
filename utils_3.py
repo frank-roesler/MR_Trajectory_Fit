@@ -787,25 +787,45 @@ def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=Tru
     if n_rows == 1:
         ax = np.expand_dims(ax, axis=0)
 
-    col_titles = ["Phantom", "Recon", "Phantom - Recon", "Initial Recon", "Phantom - Initial Recon"]
+    col_titles = ["Phantom", "Initial Recon", "Phantom - Initial Recon", "Recon", "Phantom - Recon"]
 
     for r in range(n_rows):
         phantom_np = phantom_b[r].detach().cpu().numpy()
         recon_np = recon_b[r].detach().cpu().numpy()
         init_np = init_b[r].detach().cpu().numpy()
+        
+        # Calculate differences once to use them for scaling and plotting
+        diff_init = phantom_np - init_np
+        diff_recon = phantom_np - recon_np
 
         images = [
             phantom_np,
-            recon_np,
-            phantom_np - recon_np,
             init_np,
-            phantom_np - init_np,
+            diff_init,
+            recon_np,
+            diff_recon,
         ]
 
+        # shared scales for the absolute images (Phantom, Init, Recon)
+        vmin_img = min(phantom_np.min(), init_np.min(), recon_np.min())
+        vmax_img = max(phantom_np.max(), init_np.max(), recon_np.max())
+
+        # shared scales for the difference images
+        vmin_diff = min(diff_init.min(), diff_recon.min())
+        vmax_diff = max(diff_init.max(), diff_recon.max())
+
         for c in range(5):
-            im = ax[r, c].imshow(images[c], cmap="gray")
+            # Apply the shared scales based on the column index
+            if c in [0, 1, 3]:  # Phantom, Initial Recon, Recon
+                vmin, vmax = vmin_img, vmax_img
+            else:               # Difference images
+                vmin, vmax = vmin_diff, vmax_diff
+
+            im = ax[r, c].imshow(images[c], cmap="gray", vmin=vmin, vmax=vmax)
+            
             if r == 0:
                 ax[r, c].set_title(col_titles[c])
+                
             cbar = fig.colorbar(im, ax=ax[r, c], orientation="horizontal", fraction=0.046, pad=0.04)
             cbar.ax.tick_params(labelsize=6)
             ax[r, c].axis("off")
