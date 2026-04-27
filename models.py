@@ -1,13 +1,20 @@
 import torch
 import torch.nn as nn
 
-
 class FourierPulseOpt(nn.Module):
     """Auxiliary 1d Fourier series. Used in FourierSeries class."""
 
-    def __init__(self, t_min, t_max, n_coeffs=101, initialization="cos", coeff_lvl=1e-5):
+    def __init__(self, t_min, t_max, n_coeffs=101, initialization="cos", coeff_lvl=1e-5, seed=None):
         super().__init__()
-        p = coeff_lvl * torch.randn((2 * n_coeffs + 1, 2))
+        
+        # Local generator if a seed is provided
+        generator = None
+        if seed is not None:
+            generator = torch.Generator().manual_seed(seed)
+
+        # Initialization of coefficients
+        p = coeff_lvl * torch.randn((2 * n_coeffs + 1, 2), generator=generator)
+        
         if initialization == "cos":
             p[n_coeffs + 1, 1] = 1.0
         elif initialization == "sin":
@@ -32,13 +39,19 @@ class FourierPulseOpt(nn.Module):
 
 
 class FourierCurve(nn.Module):
-    def __init__(self, tmin, tmax, n_petals, initial_max=1.0, n_coeffs=51, coeff_lvl=1e-5):
+    def __init__(self, tmin, tmax, n_petals, initial_max=1.0, n_coeffs=51, coeff_lvl=1e-5, seed=None):
         super().__init__()
         self.scaling = initial_max * 0.5
+        
+        # Secondary seed so the sine and cosine pulses 
+        # don't initialize with the exact same underlying random noise pattern
+        seed1 = seed
+        seed2 = seed + 1 if seed is not None else None
+        
         self.pulses = nn.ModuleList(
             [
-                FourierPulseOpt(tmin, tmax, n_coeffs=n_coeffs, initialization="cos", coeff_lvl=coeff_lvl),
-                FourierPulseOpt(tmin, tmax, n_coeffs=n_coeffs, initialization="sin", coeff_lvl=coeff_lvl),
+                FourierPulseOpt(tmin, tmax, n_coeffs=n_coeffs, initialization="cos", coeff_lvl=coeff_lvl, seed=seed1),
+                FourierPulseOpt(tmin, tmax, n_coeffs=n_coeffs, initialization="sin", coeff_lvl=coeff_lvl, seed=seed2),
             ]
         )
         self.name = "FourierCurve"
@@ -205,6 +218,114 @@ class UNet1D(nn.Module):
         return self.final_conv(x)
 
 
+
+class CausalTCNDCF(nn.Module):
+    """Causal Temporal Convolutional Network for DCF prediction
+    
+    Models sequential dependency: f_n depends on f_(n-1), f_(n-2), ... f_0
+    Uses causal (look-back only) dilated convolutions for efficient autoregressive modeling.
+    
+    Benefits:
+    - Captures sequential/autoregressive structure of DCF
+    - Memory efficient for long sequences (no RNNs)
+    - Can capture high frequencies via dilated receptive fields
+    - Parallelizable (unlike LSTMs)
+    
+    Input: (batch_size, 2, n_points)  # kx, ky trajectory
+    Output: (batch_size, 1, n_points) # DCF with sequential dependencies
+    
+    Good for 80k sequences with sequential structure
+    """
+    def __init__(self, in_channels=2, out_channels=1, hidden_dim=32, n_layers=4, kernel_size=3):
+        super().__init__()
+        self.name = "CausalTCNDCF"
+        self.hidden_dim = hidden_dim
+        self.n_layers = n_layers
+        self.kernel_size = kernel_size
+        
+        # Initial projection from coordinates to features
+        self.input_proj = nn.Conv1d(in_channels, hidden_dim, kernel_size=1)
+        
+        # Causal residual blocks with increasing dilation
+        self.residual_blocks = nn.ModuleList()
+        dilations = [2**i for i in range(n_layers)]  # [1, 2, 4, 8, ...]
+        
+        for dilation in dilations:
+            self.residual_blocks.append(
+                CausalResidualBlock(hidden_dim, hidden_dim, kernel_size, dilation)
+            )
+        
+        # Output projection: hidden_dim -> 1 (DCF)
+        self.output_proj = nn.Sequential(
+            nn.Conv1d(hidden_dim, hidden_dim // 2, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv1d(hidden_dim // 2, out_channels, kernel_size=1),
+            nn.ReLU()  # Ensure non-negative
+        )
+    
+    def forward(self, x):
+        """
+        Args:
+            x: (batch_size, 2, n_points) - kx, ky coordinates
+        
+        Returns:
+            dcf: (batch_size, 1, n_points) - DCF with sequential structure
+        """
+        # Project input coordinates to feature space
+        out = self.input_proj(x)  # (B, hidden_dim, N)
+        
+        # Apply causal residual blocks (sequential processing)
+        for block in self.residual_blocks:
+            out = block(out)  # Maintains (B, hidden_dim, N)
+        
+        # Project to output
+        out = self.output_proj(out)  # (B, 1, N)
+        
+        return out
+
+
+class CausalResidualBlock(nn.Module):
+    """Causal residual block with dilated convolution
+    
+    Ensures causality: output at timestep t only depends on inputs at t, t-1, t-2, ...
+    """
+    def __init__(self, in_channels, out_channels, kernel_size, dilation):
+        super().__init__()
+        self.kernel_size = kernel_size
+        self.dilation = dilation
+        
+        # Calculate padding for causal convolution
+        # Causal padding: pad left side only (look at past)
+        self.padding = (kernel_size - 1) * dilation
+        
+        self.conv = nn.Conv1d(
+            in_channels, out_channels,
+            kernel_size=kernel_size,
+            dilation=dilation,
+            padding=self.padding
+        )
+        
+        self.relu = nn.ReLU()
+        self.norm = nn.BatchNorm1d(out_channels)
+    
+    def forward(self, x):
+        # Apply causal convolution with left padding only
+        out = self.conv(x)
+        
+        # Remove right padding to maintain causality
+        if self.padding > 0:
+            out = out[:, :, :-self.padding]
+        
+        # Normalize and activate
+        out = self.norm(out)
+        out = self.relu(out)
+        
+        # Residual connection
+        if out.shape == x.shape:
+            out = out + x
+        
+        return out
+    
 # x = torch.randn((2, 100))
 # net = FCN1D(channels=[2, 16, 32, 16, 1])
 # y = net(x)

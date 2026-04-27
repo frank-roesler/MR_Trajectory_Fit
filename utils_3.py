@@ -12,7 +12,7 @@ import os
 from PIL import Image
 import numpy as np
 from mirtorch_pkg import NuSense_om, NuSense
-from models import DCFNet, UNet1D, FCN1D
+from models import DCFNet, UNet1D, FCN1D, CausalTCNDCF
 import json
 from os.path import join, dirname
 from scipy.signal import find_peaks
@@ -37,12 +37,22 @@ class ImageRecon:
         self.timesteps = params["timesteps"]
         self.zero_filling = params["zero_filling"]
         self.n_petals = params["n_petals"]
-        if dcfnet == "unet":
+
+        if dcfnet == "unet": # first dcf with fixed angles
             self.dcfnet = UNet1D(in_channels=2, out_channels=1, features=[16, 32, 64, 128, 256])
+            dcfdict = torch.load(f"trained_models/dcfnet_unet.pt", map_location=self.device)
+        elif dcfnet == "512_unet": # second dcf with fixed angles
+            self.dcfnet = UNet1D(in_channels=2, out_channels=1, features=[16, 32, 64, 128, 256])
+            dcfdict = torch.load(f"trained_models/dcfnet_512_unet.pt", map_location=self.device)
+        elif dcfnet == "general_causal_tcn": # dcf with variable angles
+            self.dcfnet = CausalTCNDCF(in_channels=2, out_channels=1, hidden_dim=64, kernel_size=3, n_layers=6)
+            dcfdict = torch.load(f"trained_models/dcfnet_general_causal_tcn.pt", map_location=self.device)
+        elif dcfnet == "general_unet": # dcf with variable angles
+            self.dcfnet = UNet1D(in_channels=2, out_channels=1, features=[32, 64, 128, 256, 512, 1024], kernel_size=5)
+            dcfdict = torch.load(f"trained_models/dcfnet_general_unet.pt", map_location=self.device)
         else:
             self.dcfnet = FCN1D(channels=[2, 128, 256, 512, 256, 128, 1], kernel_size=21)
-        dcfdict = torch.load(f"trained_models/dcfnet_{self.dcfnet.name}.pt", map_location=self.device)
-        # dcfdict = torch.load("trained_models/dcfnet_512_unet.pt", map_location=self.device)
+            dcfdict = torch.load(f"trained_models/dcfnet_{self.dcfnet.name}.pt", map_location=self.device) # not sure about this line
         self.dcfnet.load_state_dict(dcfdict)
         self.dcfnet.to(self.device)
 
@@ -279,37 +289,51 @@ class TrainPlotter:
         plt.rc("ytick", labelsize=8)
 
         # --- 0. Figure Setup ---
-        # Returns a 2x3 array of axes
-        self.fig, axs = plt.subplots(2, 3, figsize=(15, 8), constrained_layout=True)
+        # Returns a 2x3 array of axes (Modified with GridSpec for sub-loss plot)
+        self.fig = plt.figure(figsize=(15, 8), constrained_layout=True)
+        gs = self.fig.add_gridspec(2, 3, width_ratios=[1, 1, 1])
 
-        # Unpack axes for easier access
-        ax_loss = axs[0, 0]
-        ax_img = axs[0, 1]
-        ax_traj = axs[0, 2]
-        ax_grad = axs[1, 0]  # New: Gradient Plot
-        ax_pns = axs[1, 1]  # New: PNS Plot
-        ax_pns_norm = axs[1, 2]  # New: max PNS Norm Plot
+        # Unpack axes
+        gs_loss = gs[0, 0].subgridspec(2, 1, hspace=0.05)
+        ax_loss = self.fig.add_subplot(gs_loss[0, 0])
+        ax_single_losses = self.fig.add_subplot(gs_loss[1, 0], sharex=ax_loss)
+
+        ax_img = self.fig.add_subplot(gs[0, 1])
+        ax_traj = self.fig.add_subplot(gs[0, 2])
+        ax_grad = self.fig.add_subplot(gs[1, 0])  # New: Gradient Plot
+        ax_pns = self.fig.add_subplot(gs[1, 1])  # New: PNS Plot
+        ax_pns_norm = self.fig.add_subplot(gs[1, 2])  # New: max PNS Norm Plot
 
         # --- 1. Loss Plot (Top Left) ---
 
         # Constraint losses on a secondary y-axis - not anymore
         # ax_loss = ax_single_losses.twinx()
-        (grad_loss_line,) = ax_loss.semilogy([], [], label="Grad Loss", linewidth=0.7, color="r")
-        (slew_loss_line,) = ax_loss.semilogy([], [], label="Slew Loss", linewidth=0.7, color="g")
-        (pns_loss_line,) = ax_loss.semilogy([], [], label="PNS Loss", linewidth=0.7, color="m")
+        (grad_loss_line,) = ax_single_losses.semilogy([], [], label="Grad Loss", linewidth=0.7, color="r")
+        (slew_loss_line,) = ax_single_losses.semilogy([], [], label="Slew Loss", linewidth=0.7, color="g")
+        (pns_loss_line,) = ax_single_losses.semilogy([], [], label="PNS Loss", linewidth=0.7, color="m")
 
         # Image loss and total loss on the primary y-axis
         (img_loss_line,) = ax_loss.semilogy([], [], label="Image Loss", linewidth=0.7, color="b")
         (img_loss_line_mirtorch,) = ax_loss.semilogy([], [], label="Image Loss MIRTorch", linewidth=0.7, color="orange")
         (total_loss_line,) = ax_loss.semilogy([], [], label="Total Loss", linewidth=0.7, color="k")
 
-        ax_loss.set_xlabel("Step")
+        ax_single_losses.set_xlabel("Step")
         ax_loss.set_ylabel("Loss")
         ax_loss.set_title("Running Loss")
+        
+        # Hide X labels for the top subplot to prevent overlapping
+        ax_loss.tick_params(labelbottom=False) 
+        ax_loss.legend(loc="upper right", prop={"size": 6})
+        ax_loss.grid(True, alpha=0.3)
+
         # ax_single_losses.set_ylabel("Grad-Slew-PNS Losses")
-        lns = [grad_loss_line, slew_loss_line, pns_loss_line, img_loss_line, total_loss_line, img_loss_line_mirtorch]
-        labs = [l.get_label() for l in lns]
-        ax_loss.legend(lns, labs, loc=0, prop={"size": 6})
+        ax_single_losses.set_ylabel("Penalties")
+        ax_single_losses.legend(loc="upper right", prop={"size": 6})
+        ax_single_losses.grid(True, alpha=0.3)
+
+        # lns = [grad_loss_line, slew_loss_line, pns_loss_line, img_loss_line, total_loss_line, img_loss_line_mirtorch]
+        # labs = [l.get_label() for l in lns]
+        # ax_loss.legend(lns, labs, loc=0, prop={"size": 6})
 
         # --- 2. Reconstructed Image (Top Middle) ---
         im_recon = ax_img.imshow(torch.zeros((params["img_size"], params["img_size"])).numpy(), cmap="gray")
@@ -320,6 +344,7 @@ class TrainPlotter:
         # --- 3. Trajectory (Top Right) ---
         (traj_line,) = ax_traj.plot([], [], label="trajectory", linewidth=0.7, marker=".", markersize=3)
         ax_traj.set_title("Trajectory")
+        ax_traj.set_aspect('equal', adjustable='datalim')
 
         # --- 4. Gradients Gx/Gy (Bottom Left) ---
         (gx_line,) = ax_grad.plot([], [], label="Gx", linewidth=1.0, color="tab:blue")
@@ -331,7 +356,6 @@ class TrainPlotter:
         ax_grad.grid(True, linestyle="--", alpha=0.5)
 
         # --- 5. PNS Plots (Bottom Middle) ---
-        ax_pns = axs[1, 1]
         (pns_x_line,) = ax_pns.plot([], [], label="PNS X", linewidth=0.3, color="tab:blue")
         (pns_y_line,) = ax_pns.plot([], [], label="PNS Y", linewidth=0.3, color="tab:orange")
         (pns_norm_line,) = ax_pns.plot([], [], label="PNS Norm", linewidth=0.3, color="k")
@@ -342,7 +366,6 @@ class TrainPlotter:
         ax_pns.grid(True, linestyle="--", alpha=0.5)
 
         # --- 6. PNS Norm Plot (Bottom Right) ---
-        ax_pns_norm = axs[1, 2]
         (pns_norm_max_line,) = ax_pns_norm.plot([], [], label="Max PNS Norm", linewidth=1.0, color="k")
         ax_pns_norm.set_title("Max PNS Norm over Steps")
         ax_pns_norm.set_xlabel("Step")
@@ -371,7 +394,7 @@ class TrainPlotter:
         self.pns_norm_max_line = pns_norm_max_line
 
         self.ax_loss = ax_loss
-        # self.ax_single_losses = ax_single_losses
+        self.ax_single_losses = ax_single_losses
         self.ax_traj = ax_traj
         self.ax_img = ax_img
         self.ax_grad = ax_grad
@@ -388,7 +411,7 @@ class TrainPlotter:
 
     def update(self, step, grad_loss, img_loss, slew_loss, pns_loss, total_loss, recon, traj, rosette, gx, gy, t_axis, pns_x, pns_y, pns_norm, t_pns):
 
-        # Update for loss plot (final_figure.png and train_figure.png), evaluation, checkpoint..
+        # Update for loss plot (final_figure.pdf and train_figure.pdf), evaluation, checkpoint..
         self.grad_losses.append(grad_loss.detach().item())
         self.img_losses.append(img_loss.detach().item())
         self.slew_losses.append(slew_loss.detach().item())
@@ -409,10 +432,10 @@ class TrainPlotter:
             self.grad_loss_line.set_data(range(len(self.grad_losses)), self.grad_losses)
             self.pns_loss_line.set_data(range(len(self.pns_losses)), self.pns_losses)
             self.slew_loss_line.set_data(range(len(self.slew_losses)), self.slew_losses)
-            self.total_loss_line.set_data(range(len(self.img_losses)), self.total_losses)
+            self.total_loss_line.set_data(range(len(self.total_losses)), self.total_losses)
 
-            # self.ax_single_losses.relim()
-            # self.ax_single_losses.autoscale_view()
+            self.ax_single_losses.relim()
+            self.ax_single_losses.autoscale_view()
             self.ax_loss.relim()
             self.ax_loss.autoscale_view()
 
@@ -474,7 +497,7 @@ class TrainPlotter:
             print("=" * 100)
 
     def export_figure(self, path):
-        self.fig.savefig(os.path.join(path, "train_figure.png"))
+        self.fig.savefig(os.path.join(path, "train_figure.pdf"), bbox_inches="tight")
 
 
 class Checkpointer:
@@ -875,8 +898,8 @@ def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=Tru
 
     if export and export_path is not None:
         os.makedirs(export_path, exist_ok=True)
-        fig.savefig(os.path.join(export_path, "final_figure.png"), dpi=300)
-        fig_traj.savefig(os.path.join(export_path, "final_traj.png"), dpi=300)
+        fig.savefig(os.path.join(export_path, "final_figure.pdf"), bbox_inches="tight")
+        fig_traj.savefig(os.path.join(export_path, "final_traj.pdf"), bbox_inches="tight")
 
     if show:
         plt.show()
@@ -1011,7 +1034,7 @@ def psf(reconstructor, fft_template, rosette_init, rosette_final, device, export
 
         plt.tight_layout()
         os.makedirs(export_path, exist_ok=True)
-        plt.savefig(os.path.join(export_path, "psf.png"), dpi=300)
+        plt.savefig(os.path.join(export_path, "psf.pdf"), bbox_inches="tight")
         plt.show()
 
 
@@ -1025,3 +1048,54 @@ def compute_initial_fft(phantoms, padding):
     fft = torch.stack(ffts, dim=0)
     fft = fft.unsqueeze(1)
     return fft
+
+
+def plot_and_save_rosette(rosette_trajectory, angles, export_path, filename="optimized_rosette.pdf"):
+    """
+    Plots the optimized rosette trajectory and its corresponding angles side-by-side,
+    and saves the resulting figure.
+    """
+    
+    angles_rad = angles.detach().cpu().numpy()
+    traj_data = rosette_trajectory.cpu().numpy()
+    
+    angles_deg = angles_rad * 180 / np.pi
+    print("Angles (degrees): ", angles_deg)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+
+    # --- 1: Optimized Rosette Trajectory ---
+    ax1.plot(traj_data[:, 0], traj_data[:, 1])
+    ax1.set_title("Optimized Rosette Trajectory")
+    ax1.set_xlabel("Kx (1/m)")
+    ax1.set_ylabel("Ky (1/m)")
+    ax1.axis("equal")
+    ax1.grid(True)
+
+    # --- 2: Angle Visualization ---
+    circle = plt.Circle((0, 0), 1, color='gray', fill=False, linestyle=':', alpha=0.4)
+    ax2.add_patch(circle)
+
+    absolute_angles = np.cumsum(angles_rad)
+    for ang in absolute_angles:
+        x_end = np.cos(ang)
+        y_end = np.sin(ang)
+        ax2.plot([0, x_end], [0, y_end], marker='o', markersize=3, alpha=0.6)
+
+    ax2.set_title("Petals angles")
+    ax2.set_xlabel("x")
+    ax2.set_ylabel("y")
+    ax2.axis("equal")
+    ax2.set_xlim(-1.2, 1.2)
+    ax2.set_ylim(-1.2, 1.2)
+    ax2.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+
+    os.makedirs(export_path, exist_ok=True) 
+    filepath = os.path.join(export_path, filename)
+    fig.savefig(filepath, format='pdf', bbox_inches="tight")
+    
+    plt.show()
+    
+    return fig

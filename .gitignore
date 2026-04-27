@@ -18,3 +18,6 @@ train_data/
 safe_pns_prediction/
 venv/
 run_all.py
+trained_models/dcfnet_general_CausalTCNDCF.pt
+trained_models/dcfnet_general_unet.pt
+trained_models/

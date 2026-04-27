@@ -11,6 +11,7 @@ from utils_3 import (
     final_plots,
     get_rotation_matrix,
     get_device,
+    plot_and_save_rosette,
     psf,
     compute_initial_fft,
 )
@@ -25,18 +26,18 @@ torch.set_printoptions(threshold=100000)
 
 device = get_device()
 
-batch_size = 5
+batch_size = 1
 phantoms = get_batch_of_phantoms_brainweb(batch_size, minc_path="t1_icbm_normal_1mm_pn3_rf20.mnc", size=(params["img_size"], params["img_size"])).to(device)
 fft = compute_initial_fft(phantoms, padding=params["img_size"])
 t = torch.linspace(0, params["duration"], steps=params["timesteps"], device=device).unsqueeze(1)  # (timesteps, 1)
 
-model = FourierCurve(tmin=0, tmax=params["duration"], n_petals=params["n_petals"], initial_max=kmax_traj, n_coeffs=params["model_size"], coeff_lvl=1e-2).to(device)  # 1e-2
+model = FourierCurve(tmin=0, tmax=params["duration"], n_petals=params["n_petals"], initial_max=kmax_traj, n_coeffs=params["model_size"], coeff_lvl=1e-2, seed = 42).to(device)  # 1e-2
 # model = Ellipse(tmin=0, tmax=params["duration"], initial_max=kmax_traj).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=params["lr"])
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=1000, factor=0.5, min_lr=1e-6, threshold=1e-6, cooldown=100)
 
 loss_fcns = LossCollection(params["loss_function"])
-reconstructor = ImageRecon(params, kmax_img, normalization, dcfnet="unet")  # k-space -> Image
+reconstructor = ImageRecon(params, kmax_img, normalization, dcfnet="general_unet")  # k-space -> Image
 plotter = TrainPlotter(params, fft, reconstructor, phantoms, loss_fcns.loss_fn, optimizer)
 checkpointer = Checkpointer(export_path, params, dt)
 safe_model = SAFE_PNS(dt=dt, hw_path="safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc", method="fourier")
@@ -102,16 +103,4 @@ final_plots(phantoms, recon_best_mirtorch, initial_recon, plotter.total_losses, 
 
 psf(reconstructor, fft[0:1], rosette_init, rosette_for_final, device, export_path)
 
-print("Angles (degrees): ", model.angles.detach().cpu().numpy() * 180 / np.pi)
-
-# Plot rosette to check rotation
-plt.figure(figsize=(6, 6))
-plt.plot(rosette_for_final[:, 0].cpu(), rosette_for_final[:, 1].cpu())
-plt.title("Optimized Rosette Trajectory")
-plt.xlabel("Kx (1/m)")
-plt.ylabel("Ky (1/m)")
-plt.axis("equal")
-plt.grid()
-plt.savefig(export_path + "/optimized_rosette.png")
-plt.show()
-
+fig = plot_and_save_rosette(rosette_for_final, model.angles, export_path)
