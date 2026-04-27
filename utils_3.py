@@ -88,18 +88,44 @@ class ImageRecon:
         I0 = torch.flip(torch.rot90(I0.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
         return I0 * self.normalization
 
+    # TODO Riccardo: We have to modify that it works either way, when training with fixed angles or with variable angles.
+    # --->
+    # def reconstruct_img_dcfnet(self, rosette, sampled):
+    #     rosette = rosette.squeeze().permute(1, 0) / self.kmax_img * torch.pi
+    #     sampled = sampled.reshape(1, 1, -1)
+    #     dcf = self.dcfnet(rosette[:, : self.timesteps - 1].unsqueeze(0)).squeeze()
+    #     dcf = torch.cat([dcf.repeat((1, self.n_petals)), torch.zeros(1, 2, device=dcf.device)], dim=-1).unsqueeze(0) + 0j
+    #     rosette = rosette.permute(1, 0)
+    #     kbnufft.nufft.set_dims(sampled.shape[-1], (self.img_size, self.img_size), device=rosette.device, Nb=1)
+    #     kbnufft.nufft.precompute(rosette)
+    #     I0 = kbnufft.adjoint(rosette, (sampled * dcf).squeeze(0)).unsqueeze(0)
+    #     I0 = torch.flip(torch.rot90(I0.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
+    #     I0 = I0 * self.normalization
+    #     return I0
+
     def reconstruct_img_dcfnet(self, rosette, sampled):
-        rosette = rosette.squeeze().permute(1, 0) / self.kmax_img * torch.pi
+        rosette = rosette.squeeze() / self.kmax_img * torch.pi
         sampled = sampled.reshape(1, 1, -1)
-        dcf = self.dcfnet(rosette[:, : self.timesteps - 1].unsqueeze(0)).squeeze()
-        dcf = torch.cat([dcf.repeat((1, self.n_petals)), torch.zeros(1, 2, device=dcf.device)], dim=-1).unsqueeze(0) + 0j
-        rosette = rosette.permute(1, 0)
         kbnufft.nufft.set_dims(sampled.shape[-1], (self.img_size, self.img_size), device=rosette.device, Nb=1)
         kbnufft.nufft.precompute(rosette)
+
+        # dcf = self.dcfnet(rosette.permute(1, 0)[:, : self.timesteps - 1].unsqueeze(0)).squeeze()
+        # dcf = torch.cat([dcf.repeat((1, self.n_petals)), torch.zeros(1, 2, device=dcf.device)], dim=-1).unsqueeze(0) + 0j
+        dcf = self.dcfnet(rosette[:-2, :].permute(1, 0).unsqueeze(0)).squeeze() + 0j
+        dcf = torch.cat([dcf, torch.zeros(2, device=dcf.device)], dim=-1)
+
+        dcf = self.normalize_dcf(dcf.view(1, 1, -1), rosette, (self.img_size, self.img_size))
         I0 = kbnufft.adjoint(rosette, (sampled * dcf).squeeze(0)).unsqueeze(0)
         I0 = torch.flip(torch.rot90(I0.abs(), k=1, dims=(2, 3)), dims=[2]).squeeze()
-        I0 = I0 * self.normalization
         return I0
+
+    def normalize_dcf(self, dcf, ktraj, im_size):
+        x = torch.ones(1, *im_size, device=dcf.device) + 0j
+        k = kbnufft.forward(ktraj, x)
+        x_rec = kbnufft.adjoint(ktraj, k * dcf.squeeze(0)).abs()
+        scale = x_rec.sum() / (x_rec**2).sum()
+        return dcf * scale
+    # <---
 
     def reconstruct_img_nudft(self, rosette, sampled):
         rosette = rosette.squeeze().permute(1, 0)

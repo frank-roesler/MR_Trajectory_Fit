@@ -217,8 +217,7 @@ class UNet1D(nn.Module):
 
         return self.final_conv(x)
 
-
-
+# TODO Riccardo: Create two basis classes for either single petal or multi-petal trajectory dcf nets to ensure that they don't become mixed up
 class CausalTCNDCF(nn.Module):
     """Causal Temporal Convolutional Network for DCF prediction
     

@@ -37,7 +37,7 @@ optimizer = torch.optim.Adam(model.parameters(), lr=params["lr"])
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=1000, factor=0.5, min_lr=1e-6, threshold=1e-6, cooldown=100)
 
 loss_fcns = LossCollection(params["loss_function"])
-reconstructor = ImageRecon(params, kmax_img, normalization, dcfnet="general_unet")  # k-space -> Image
+reconstructor = ImageRecon(params, kmax_img, normalization, dcfnet="general_causal_tcn")  # k-space -> Image
 plotter = TrainPlotter(params, fft, reconstructor, phantoms, loss_fcns.loss_fn, optimizer)
 checkpointer = Checkpointer(export_path, params, dt)
 safe_model = SAFE_PNS(dt=dt, hw_path="safe_pns_prediction/MP_GradSys_K2298_2250V_1250A_W60_SC72CD.asc", method="fourier")
