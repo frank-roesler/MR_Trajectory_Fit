@@ -18,3 +18,4 @@ train_data/
 safe_pns_prediction/
 venv/
 run_all.py
+trained_models/

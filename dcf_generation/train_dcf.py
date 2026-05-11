@@ -19,22 +19,19 @@ from dcf_utils import (
     plot_loss,
     plot_final_examples,
     train_step,
+    calculate_pipe_E,
+    plot_E_colormap,
 )
 from torch.utils.data import DataLoader
 from models import UNet1D, FourierCurve
 import os
 from datetime import datetime
 
-data_dir = "dcf_generation/train_data/"
-os.makedirs(data_dir, exist_ok=True)
 output_dir = "trained_models/"
-dataset = TrajectoryDCFDataset(data_dir)
 
-n_epochs = 2
+n_epochs = 100
 batch_size = 64
 learning_rate = 5e-4
-n_steps = 100  # total steps. After [n_epochs*len(train_data)/batch_size] steps, start computing dcfs if not already doing so.
-compute_dcfs = False
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("mps")
 print("Device:", device)
@@ -44,9 +41,6 @@ print("Device:", device)
 dcfnet = UNet1D(in_channels=2, out_channels=1, features=[16, 32, 64, 128, 256], kernel_size=5).to(device)
 # dcfnet = ResNet1D().to(device)
 
-if len(dataset) > 0:
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    dataloader_cycle = cycle(dataloader)
 optimizer = torch.optim.AdamW(dcfnet.parameters(), lr=learning_rate)
 model = FourierCurve(
     tmin=0,
@@ -58,58 +52,111 @@ model = FourierCurve(
     angle_lvl=0.05,
 ).to(device)
 
-losses = []
-best_loss = float("inf")
+# --- Dataloaders ---
+base_data_dir = "dcf_generation/train_data/"
+train_dataset = TrajectoryDCFDataset(os.path.join(base_data_dir, "train"))
+val_dataset = TrajectoryDCFDataset(os.path.join(base_data_dir, "val"))
+test_dataset = TrajectoryDCFDataset(os.path.join(base_data_dir, "test"))
+
+train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+
+# --- Training Loop ---
+best_val_loss = float("inf")
 t0 = time()
-dcfnet.train()
-for step in range(n_steps):
-    if step >= n_epochs * len(dataset) / batch_size:
-        compute_dcfs = True
-    if compute_dcfs:
-        with torch.no_grad():
-            rosette_batch = get_rosette_batch(model, batch_size, device=device)
-            dcf_batch = get_dcf_batch(rosette_batch)
-            # petal_batch = get_petal_batch_from_rosette(rosette_batch)
-            # dcf_petal_batch = get_dcf_petal_batch_from_dcf(dcf_batch)
-            for i in range(batch_size):
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                # pt = petal_batch[i].detach().cpu().contiguous()
-                # dcf = dcf_petal_batch[i].detach().cpu().contiguous()
-                pt = rosette_batch[i].detach().cpu().contiguous()
-                dcf = dcf_batch[i].detach().cpu().contiguous()
-                torch.save((pt, dcf), os.path.join(data_dir, f"{timestamp}_{i}.pt"))
-    else:
-        # petal_batch, dcf_petal_batch = next(dataloader_cycle)
-        rosette_batch, dcf_batch = next(dataloader_cycle)
-    # loss, dcf_pred_batch = train_step(dcfnet, optimizer, petal_batch, dcf_petal_batch, device=device)
-    loss, dcf_pred_batch = train_step(dcfnet, optimizer, rosette_batch, dcf_batch, device=device)
-    if loss < 0.99 * best_loss:
-        torch.save((dcfnet.state_dict(), dcfnet.kernel_size, dcfnet.features), os.path.join(output_dir, f"dcfnet_{params["img_size"]}_{dcfnet.name}.pt"))
-        best_loss = loss
+train_losses_history = []
+val_losses_history = []
 
-    losses.append(loss)
-    if compute_dcfs == True or step % 20 == 0:
-        t0 = plot_loss(losses, step, n_steps, t0, batch_size)
+for epoch in range(n_epochs):
+    # Training Phase
+    dcfnet.train()
+    epoch_train_losses = []
+    
+    for rosette_batch, dcf_batch in train_dataloader:
+        loss, dcf_pred_batch = train_step(dcfnet, optimizer, rosette_batch, dcf_batch, device=device)
+        epoch_train_losses.append(loss)
+    
+    avg_train_loss = np.mean(epoch_train_losses)
+    train_losses_history.append(avg_train_loss)
 
+    # Validation Phase
+    dcfnet.eval()
+    epoch_val_losses = []
+    
+    with torch.no_grad():
+        for val_rosette_batch, val_dcf_batch in val_dataloader:
+            ktraj = val_rosette_batch.to(device).permute(0, 2, 1).contiguous()
+            val_dcf_batch = val_dcf_batch.to(device)
+            
+            dcf_pred_batch = dcfnet(ktraj).squeeze(1)
+            
+            val_loss = torch.mean((val_dcf_batch - dcf_pred_batch) ** 2)
+            epoch_val_losses.append(val_loss.item())
 
-print("FINAL LOSS", np.mean(losses[-100:]).item())
-plot_loss(losses, n_steps, n_steps, t0, batch_size, block=False)
+    avg_val_loss = np.mean(epoch_val_losses)
+    val_losses_history.append(avg_val_loss)
 
-rosette_batch = get_rosette_batch(model, 128, device=device)
-dcf_batch = get_dcf_batch(rosette_batch)
-# petal_batch = get_petal_batch_from_rosette(rosette_batch)
-# dcf_petal_batch = get_dcf_petal_batch_from_dcf(dcf_batch)
+    # Plot the losses
+    t0 = plot_loss(train_losses_history, val_losses_history, epoch, n_epochs, t0)
 
+    # Save Best Model
+    if avg_val_loss < best_val_loss:
+        torch.save((dcfnet.state_dict(), dcfnet.kernel_size, dcfnet.features), 
+                   os.path.join(output_dir, f"dcfnet_{params['img_size']}_{dcfnet.name}_best.pt"))
+        best_val_loss = avg_val_loss
+
+# --- Evaluation on Test Set ---
+print("\n--- Final Test Set Evaluation ---")
 dcfnet.eval()
+test_l1_losses, test_l2_losses = [], []
+
+last_ktraj = None
+last_dcf_pred = None
+
 with torch.no_grad():
-    for i in range(128):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        pt = rosette_batch[i].detach().cpu().contiguous()
-        dcf = dcf_batch[i].detach().cpu().contiguous()
-        torch.save((pt, dcf), os.path.join(data_dir, f"{timestamp}_{i}.pt"))
-    dcf_pred_batch = dcfnet(rosette_batch.permute(0, 2, 1)).squeeze(1)
-    l1loss = torch.mean((dcf_batch - dcf_pred_batch).abs())
-    l2loss = torch.mean((dcf_batch - dcf_pred_batch) ** 2)
-    plot_final_examples(dcf_batch, dcf_pred_batch)
-    print("Final L1 Loss:", l1loss.item())
-    print("Final L2 Loss:", l2loss.item())
+    for test_rosette_batch, test_dcf_batch in test_dataloader:
+        ktraj = test_rosette_batch.to(device).permute(0, 2, 1).contiguous()
+        test_dcf_batch = test_dcf_batch.to(device)
+        
+        dcf_pred_batch = dcfnet(ktraj).squeeze(1)
+        
+        l1loss = torch.mean((test_dcf_batch - dcf_pred_batch).abs())
+        l2loss = torch.mean((test_dcf_batch - dcf_pred_batch) ** 2)
+        
+        test_l1_losses.append(l1loss.item())
+        test_l2_losses.append(l2loss.item())
+        
+        last_ktraj = ktraj
+        last_dcf_pred = dcf_pred_batch
+
+print(f"Final Test L1 Loss: {np.mean(test_l1_losses):.6f}")
+print(f"Final Test L2 Loss: {np.mean(test_l2_losses):.6f}")
+
+# True vs Pred DCF
+plot_final_examples(test_dcf_batch, last_dcf_pred)
+
+# E Colormap
+print("Computing E = AA^HW for the final test batch...")
+
+with torch.no_grad():
+    # Calculate raw E
+    E_raw = calculate_pipe_E(last_dcf_pred, last_ktraj, params["img_size"], device)
+    
+    # Normalize E so the average density is exactly 1.0
+    E_normalized = E_raw / (E_raw.mean(dim=1, keepdim=True) + 1e-8)
+    
+    # Plot the colormap of the rosette trajectory
+    plot_E_colormap(E_normalized, last_ktraj)
+
+with torch.no_grad():
+    # Calculate raw E using the TRUE DCF
+    E_raw_true = calculate_pipe_E(test_dcf_batch, last_ktraj, params["img_size"], device)
+    
+    # Normalize
+    E_normalized_true = E_raw_true / (E_raw_true.mean(dim=1, keepdim=True) + 1e-8)
+    
+    # Plot the colormap of the true rosette density
+    print("Plotting TRUE DCF Effective Density...")
+    plot_E_colormap(E_normalized_true, last_ktraj)
