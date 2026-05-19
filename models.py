@@ -155,7 +155,12 @@ class ConvBlock(nn.Module):
     def __init__(self, in_ch, out_ch, kernel_size=3):
         super().__init__()
         padding = kernel_size // 2
-        self.block = nn.Sequential(nn.Conv1d(in_ch, out_ch, kernel_size, padding=padding), nn.ReLU(), nn.Conv1d(out_ch, out_ch, kernel_size, padding=padding), nn.ReLU())
+        self.block = nn.Sequential(
+            nn.Conv1d(in_ch, out_ch, kernel_size, padding=padding), 
+            nn.SiLU(), 
+            nn.Conv1d(out_ch, out_ch, kernel_size, padding=padding), 
+            nn.SiLU()
+            )
 
     def forward(self, x):
         return self.block(x)
@@ -203,7 +208,7 @@ class UNet1D(nn.Module):
 
         # Final output conv
         self.final_conv = nn.Conv1d(prev_ch, out_channels, kernel_size=1)
-        self.out_activation = nn.ReLU()  # Ensure non-negative DCF outputs
+        self.out_activation = nn.SiLU()  # Ensure non-negative DCF outputs
         self.initialize_weights()
 
     def initialize_weights(self):

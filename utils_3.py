@@ -79,7 +79,7 @@ class ImageRecon:
         # dcf = self.dcfnet(rosette.permute(1, 0)[:, : self.timesteps - 1].unsqueeze(0)).squeeze()
         # dcf = torch.cat([dcf.repeat((1, self.n_petals)), torch.zeros(1, 2, device=dcf.device)], dim=-1).unsqueeze(0) + 0j
         dcf = self.dcfnet(rosette[:-2, :].permute(1, 0).unsqueeze(0)).squeeze() + 0j
-        dcf = torch.cat([dcf, torch.zeros(2)], dim=-1)
+        dcf = torch.cat([dcf, torch.zeros(2, device=dcf.device)], dim=-1)
 
         dcf = self.normalize_dcf(dcf.view(1, 1, -1), rosette, (self.img_size, self.img_size))
         I0 = kbnufft.adjoint(rosette, (sampled * dcf).squeeze(0)).unsqueeze(0)
@@ -831,15 +831,20 @@ def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=Tru
         # shared scales for the difference images
         vmin_diff = min(diff_init.min(), diff_recon.min())
         vmax_diff = max(diff_init.max(), diff_recon.max())
+        max_abs_diff = max(abs(diff_init.min()), abs(diff_init.max()), 
+                        abs(diff_recon.min()), abs(diff_recon.max()))
+        vmin_diff = -max_abs_diff
+        vmax_diff = max_abs_diff
 
         for c in range(5):
-            # Apply the shared scales based on the column index
             if c in [0, 1, 3]:  # Phantom, Initial Recon, Recon
                 vmin, vmax = vmin_img, vmax_img
+                current_cmap = "gray"
             else:               # Difference images
                 vmin, vmax = vmin_diff, vmax_diff
+                current_cmap = "coolwarm"
 
-            im = ax[r, c].imshow(images[c], cmap="gray", vmin=vmin, vmax=vmax)
+            im = ax[r, c].imshow(images[c], cmap=current_cmap, vmin=vmin, vmax=vmax)
             
             if r == 0:
                 ax[r, c].set_title(col_titles[c])
@@ -965,8 +970,8 @@ def psf(reconstructor, fft_template, rosette_init, rosette_final, device, export
         fft_ones = torch.ones_like(fft_template, dtype=torch.complex64, device=device)
 
         # Reconstruct the PSF
-        psf_init = reconstructor.reconstruct_img(fft_ones, rosette_init, method="kbnufft")
-        psf_final = reconstructor.reconstruct_img(fft_ones, rosette_final, method="kbnufft")
+        psf_init = reconstructor.reconstruct_img(fft_ones, rosette_init, method="dcfnet")
+        psf_final = reconstructor.reconstruct_img(fft_ones, rosette_final, method="dcfnet")
 
         # Move to CPU for plotting
         psf_init_np = psf_init.abs().cpu().numpy()

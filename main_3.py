@@ -24,10 +24,10 @@ torch.set_printoptions(threshold=100000)
 device = get_device()
 
 batch_size = 5
-dcfnet_path = f"trained_models/dcfnet_512_unet.pt"
+dcfnet_path = f"trained_models/dcfnet_512_unet_trained_with_E.pt"
 
 phantoms = get_batch_of_phantoms_brainweb(batch_size, minc_path="t1_icbm_normal_1mm_pn3_rf20.mnc", size=(params["img_size"], params["img_size"])).to(device)
-fft = compute_initial_fft(phantoms, padding=params["img_size"])
+fft = compute_initial_fft(phantoms, padding=params["img_size"]).to(device)
 t = torch.linspace(0, params["duration"], steps=params["timesteps"], device=device).unsqueeze(1)  # (timesteps, 1)
 
 model = FourierCurve(tmin=0, tmax=params["duration"], n_petals=params["n_petals"], initial_max=kmax_traj, n_coeffs=params["model_size"], coeff_lvl=1e-3).to(device)  # 1e-2
@@ -51,8 +51,8 @@ with torch.no_grad():
     initial_recon_mirtorch = reconstructor.reconstruct_img(fft, rosette, method="mirtorch")
 
 
-# for step in range(params["train_steps"]):
-for step in range(1000):
+for step in range(params["train_steps"]):
+# for step in range(1000):
     traj = model(t)  # (timesteps, 2)
     rosette, *derivatives = make_rosette(model.angles, traj, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     recon = reconstructor.reconstruct_img(fft, rosette, method="dcfnet")
