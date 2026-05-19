@@ -21,9 +21,6 @@ import nibabel as nib
 import random
 
 
-# import safe_hw_from_asc
-
-
 class ImageRecon:
     def __init__(self, params, kmax_img, dcfnet_path):
         self.device = get_device()
@@ -662,19 +659,29 @@ def get_rotation_matrix(angle_radians):
     return rotation_matrix
 
 
-def make_rosette(angles, traj, n_petals, kmax_img, dt, zero_filling=True):
-    rotated_trajectories = [traj]
+def make_rosette(incremental_angles, base_traj, n_petals, kmax_img, dt, zero_filling=True):
+    rotated_trajectories = [base_traj]
+
+    absolute_angles = torch.cumsum(incremental_angles, dim=0)
+    # Absolute angles are used in order to make the gradient backpropagation easier. 
+    # If we used incremental angles, the gradient would have to flow from the last petal back to the first petal 
+    # through all the intermediate angles, which can be more complex and less stable. By using absolute angles, 
+    # each petal's rotation is directly determined by its own angle, allowing for more straightforward gradient 
+    # computation and optimization. cumsum keeps the dependence between petals.
+
+    
     for i in range(n_petals - 1):
-        rotation_matrix = get_rotation_matrix(angles[i])
-        traj = traj @ rotation_matrix.T
-        rotated_trajectories.append(traj)
-    d_max, dd_max = torch.zeros(1, 2, device=traj.device), torch.zeros(1, 2, device=traj.device)
+        rotation_matrix = get_rotation_matrix(absolute_angles[i])
+        rotated_petal = base_traj @ rotation_matrix.T
+        rotated_trajectories.append(rotated_petal)
+        
+    d_max, dd_max = torch.zeros(1, 2, device=base_traj.device), torch.zeros(1, 2, device=base_traj.device)
     for t in rotated_trajectories[:n_petals]:
         d, dd = compute_derivatives(t, dt)
         d_max = torch.maximum(d.abs().max(dim=0).values, d_max)
         dd_max = torch.maximum(dd.abs().max(dim=0).values, dd_max)
     if zero_filling:
-        corners = torch.ones(2, 2, device=traj.device)
+        corners = torch.ones(2, 2, device=base_traj.device)
         corners[0] *= kmax_img
         corners[1] *= -kmax_img
         rotated_trajectories.append(corners)
@@ -859,38 +866,36 @@ def final_plots(phantom, recon, initial_recon, losses, traj, slew_rate, show=Tru
     x_data = traj[:, 0].detach().cpu().numpy()
     y_data = traj[:, 1].detach().cpu().numpy()
     ax_traj.plot(x_data, y_data, linewidth=0.7, marker=".", markersize=3)
-    x_min, x_max = x_data.min(), x_data.max()
-    y_min, y_max = y_data.min(), y_data.max()
-    x_center = (x_min + x_max) / 2
-    y_center = (y_min + y_max) / 2
-    cross_frac = 0.25
-    dx = (x_max - x_min) * cross_frac / 2
-    dy = (y_max - y_min) * cross_frac / 2
-    cross_x_min, cross_x_max = x_center - dx, x_center + dx
-    cross_y_min, cross_y_max = y_center - dy, y_center + dy
-    cross_style = {"color": "red", "linestyle": "-", "linewidth": 1.2, "alpha": 0.8}
-    ax_traj.plot([cross_x_min, cross_x_max], [y_center, y_center], **cross_style)
-    ax_traj.plot([x_center, x_center], [cross_y_min, cross_y_max], **cross_style)
+    
+    x0, y0 = x_data[0], y_data[0]
+    distances = np.sqrt((x_data - x0)**2 + (y_data - y0)**2)
+    max_idx = np.argmax(distances)
+    x_far, y_far = x_data[max_idx], y_data[max_idx]
+    max_dist = distances[max_idx]
+
+    ax_traj.annotate(
+        "", 
+        xy=(x_far, y_far),      
+        xytext=(x0, y0),        
+        arrowprops=dict(arrowstyle="->", color="red", lw=1.5, alpha=0.8)
+    )
+    
+    x_mid = (x0 + x_far) / 2
+    y_mid = (y0 + y_far) / 2
     text_style = {
         "color": "red",
-        "fontsize": 9,
+        "fontsize": 10,
         "fontweight": "bold",
-        "bbox": dict(facecolor="white", alpha=0.6, edgecolor="none", pad=1),
+        "bbox": dict(facecolor="white", alpha=0.8, edgecolor="none", pad=2),
     }
-    ax_traj.text(cross_x_min, y_center, f"{x_min:.3f}", ha="right", va="center", **text_style)
-    ax_traj.text(cross_x_max, y_center, f"{x_max:.3f}", ha="left", va="center", **text_style)
-    ax_traj.text(x_center, cross_y_min, f"{y_min:.3f}", ha="center", va="top", **text_style)
-    ax_traj.text(x_center, cross_y_max, f"{y_max:.3f}", ha="center", va="bottom", **text_style)
     ax_traj.text(
-        x_center,
-        y_center,
-        "max",
-        ha="center",
-        va="center",
-        color="red",
-        fontweight="bold",
-        bbox=dict(facecolor="white", alpha=1.0, edgecolor="none", pad=2),
+        x_mid, y_mid, 
+        f"d_max = {max_dist:.3f}", 
+        ha="center", va="center", **text_style
     )
+    
+    # ------------------------------------------------------------------
+
     ax_traj.set_aspect("equal", adjustable="box")
     ax_traj.set_title(f"Final Trajectory. Slew Rate: {slew_rate.abs().max().detach().item():.2f}")
     ax_traj.grid(True, linestyle="--", alpha=0.5)

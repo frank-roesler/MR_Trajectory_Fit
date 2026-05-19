@@ -6,15 +6,12 @@ from utils_3 import (
     compute_gradients_from_traj,
     compute_pns_from_gradients,
     get_batch_of_phantoms_brainweb,
-    get_batch_of_phantoms,
     make_rosette,
     final_plots,
-    get_rotation_matrix,
     get_device,
     psf,
     compute_initial_fft,
 )
-import matplotlib.pyplot as plt
 from models import FourierCurve, Ellipse
 import torch
 from params import *
@@ -25,12 +22,20 @@ device = get_device()
 
 batch_size = 5
 dcfnet_path = f"trained_models/dcfnet_512_unet_trained_with_E.pt"
+variable_angles = False  # Set to False for fixed angles, True for variable angles during training
 
 phantoms = get_batch_of_phantoms_brainweb(batch_size, minc_path="t1_icbm_normal_1mm_pn3_rf20.mnc", size=(params["img_size"], params["img_size"])).to(device)
 fft = compute_initial_fft(phantoms, padding=params["img_size"]).to(device)
 t = torch.linspace(0, params["duration"], steps=params["timesteps"], device=device).unsqueeze(1)  # (timesteps, 1)
 
-model = FourierCurve(tmin=0, tmax=params["duration"], n_petals=params["n_petals"], initial_max=kmax_traj, n_coeffs=params["model_size"], coeff_lvl=1e-3).to(device)  # 1e-2
+model = FourierCurve(tmin=0, 
+                     tmax=params["duration"], 
+                     n_petals=params["n_petals"], 
+                     initial_max=kmax_traj, 
+                     n_coeffs=params["model_size"], 
+                     coeff_lvl=1e-3,
+                     variable_angles=variable_angles
+                     ).to(device)  # 1e-2
 # model = Ellipse(tmin=0, tmax=params["duration"], initial_max=kmax_traj).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=params["lr"])
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=1000, factor=0.5, min_lr=1e-6, threshold=1e-6, cooldown=100)
@@ -51,8 +56,8 @@ with torch.no_grad():
     initial_recon_mirtorch = reconstructor.reconstruct_img(fft, rosette, method="mirtorch")
 
 
-for step in range(params["train_steps"]):
-# for step in range(1000):
+# for step in range(params["train_steps"]):
+for step in range(1000):
     traj = model(t)  # (timesteps, 2)
     rosette, *derivatives = make_rosette(model.angles, traj, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     recon = reconstructor.reconstruct_img(fft, rosette, method="dcfnet")

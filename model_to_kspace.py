@@ -2,6 +2,7 @@ import torch
 import json
 import os
 import matplotlib.pyplot as plt
+import numpy as np
 from utils_3 import get_device, make_rosette
 from models import FourierCurve, Ellipse
 from params import *
@@ -26,6 +27,11 @@ def export_kspace_json(checkpoint_path, output_json_path):
     state_dict = checkpoint["model_state_dict"]
     n_petals = params["n_petals"]
 
+    angles_shape = state_dict.get("angles", torch.empty(0)).shape[0]
+    
+    variable_angles = False 
+    # False if angles are not present in the checkpoint, True if they are present 
+
     # model based on checkpoint
     if "Fourier" in model_name or model_name == "FourierCurve":
         n_coeffs = params.get("model_size", 51)
@@ -34,7 +40,8 @@ def export_kspace_json(checkpoint_path, output_json_path):
             tmax=tmax, 
             n_petals=n_petals, 
             initial_max=1.0, 
-            n_coeffs=n_coeffs
+            n_coeffs=n_coeffs,
+            variable_angles=variable_angles
         ).to(device)
     else:
         model = Ellipse(tmin=tmin, tmax=tmax, initial_max=1.0).to(device)
@@ -55,8 +62,8 @@ def export_kspace_json(checkpoint_path, output_json_path):
         zero_filling = params.get("zero_filling", True)
 
         rosette, _, _ = make_rosette(
-            angles=model.angles, 
-            traj=traj, 
+            incremental_angles=model.angles, 
+            base_traj=traj, 
             n_petals=n_petals, 
             kmax_img=kmax_img, 
             dt=dt, 
@@ -64,7 +71,15 @@ def export_kspace_json(checkpoint_path, output_json_path):
         )
 
 
-    print(f"Petals angles (degrees): {model.angles.detach().numpy()*180/torch.pi}")
+    if hasattr(model, 'angles'):
+        inc_angles_deg = model.angles.detach().cpu().numpy() * 180 / np.pi
+        abs_angles_deg = torch.cumsum(model.angles, dim=0).detach().cpu().numpy() * 180 / np.pi
+        
+        print("\n--- Analysis of Angles ---")
+        print(f"Incremental angles (degrees):\n {np.round(inc_angles_deg, 2)}")
+        print(f"Absolute angles (degrees):\n {np.round(abs_angles_deg, 2)}")
+        print("----------------------\n")
+
     # k space points per petal
     shift = timesteps - 1
     petals = [rosette[i * shift : (i + 1) * shift, :] for i in range(n_petals)]
@@ -107,7 +122,7 @@ def export_kspace_json(checkpoint_path, output_json_path):
 
 
 if __name__ == "__main__":
-    CHECKPOINT_FILE = "results/2026-05-18_22-55/checkpoint.pt"  
-    OUTPUT_JSON = "results/2026-05-18_22-55/kspace_traj.json" 
+    CHECKPOINT_FILE = "results/2026-05-19_19-20/checkpoint.pt"  
+    OUTPUT_JSON = "results/2026-05-19_19-20/kspace_traj.json" 
 
     export_kspace_json(CHECKPOINT_FILE, OUTPUT_JSON)

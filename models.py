@@ -51,11 +51,13 @@ class FourierPulseOpt(nn.Module):
 
 
 class FourierCurve(nn.Module):
-    def __init__(self, tmin, tmax, n_petals, initial_max=1.0, n_coeffs=51, coeff_lvl=1e-5, angle_lvl=1e-5):
+    def __init__(self, tmin, tmax, n_petals, initial_max=1.0, n_coeffs=51, coeff_lvl=1e-5, angle_lvl=1e-5, variable_angles=True):
         super().__init__()
         self.scaling = initial_max * 0.5
         self.n_petals = n_petals
         self.angle_lvl = angle_lvl
+        self.variable_angles = variable_angles
+        
         self.pulses = nn.ModuleList(
             [
                 FourierPulseOpt(tmin, tmax, n_coeffs=n_coeffs, initialization="cos", coeff_lvl=coeff_lvl),
@@ -63,7 +65,14 @@ class FourierCurve(nn.Module):
             ]
         )
         self.name = "FourierCurve"
-        self.angles = torch.nn.Parameter(2 * torch.pi / self.n_petals * torch.ones(self.n_petals) + torch.randn(self.n_petals) * angle_lvl)
+        
+        base_incremental_angles = 2 * torch.pi / self.n_petals * torch.ones(self.n_petals - 1)
+        
+        if self.variable_angles:
+            init_angles = base_incremental_angles + torch.randn(self.n_petals - 1) * angle_lvl
+            self.angles = torch.nn.Parameter(init_angles)
+        else:
+            self.register_buffer("angles", base_incremental_angles)
 
     def to(self, device):
         for pulse in self.pulses:
@@ -77,7 +86,7 @@ class FourierCurve(nn.Module):
 
     def jitter_coefficients(self):
         with torch.no_grad():
-            if self.angle_lvl > 0:
+            if self.variable_angles and self.angle_lvl > 0:
                 self.angles.data = 2 * torch.pi / self.n_petals * torch.ones_like(self.angles) + torch.randn_like(self.angles) * self.angle_lvl
             for pulse in self.pulses:
                 pulse.jitter_coefficients()
