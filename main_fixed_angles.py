@@ -56,8 +56,8 @@ with torch.no_grad():
     initial_recon_mirtorch = reconstructor.reconstruct_img(fft, rosette, method="mirtorch")
 
 
-# for step in range(params["train_steps"]):
-for step in range(1000):
+for step in range(params["train_steps"]):
+# for step in range(1000):
     traj = model(t)  # (timesteps, 2)
     rosette, *derivatives = make_rosette(model.angles, traj, params["n_petals"], kmax_img, dt, zero_filling=params["zero_filling"])
     recon = reconstructor.reconstruct_img(fft, rosette, method="dcfnet")
