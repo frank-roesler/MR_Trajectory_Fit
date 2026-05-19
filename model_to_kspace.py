@@ -1,14 +1,15 @@
 import torch
 import json
 import os
-from utils_3 import get_device, get_rotation_matrix, make_rosette
-from models import FourierCurve, Ellipse
 import matplotlib.pyplot as plt
+from utils_3 import get_device, make_rosette
+from models import FourierCurve, Ellipse
+from params import *
 
 def export_kspace_json(checkpoint_path, output_json_path):
     device = get_device()
 
-    # 1. Load the checkpoint
+    # checkpoint
     if not os.path.exists(checkpoint_path):
         print(f"Error: Checkpoint not found at {checkpoint_path}")
         return
@@ -19,22 +20,29 @@ def export_kspace_json(checkpoint_path, output_json_path):
     
     print("Loading model with params:", params)
 
-    # 2. Reconstruct the model
+    # model reconstruction
     tmin = 0
     tmax = params["duration"]
     state_dict = checkpoint["model_state_dict"]
+    n_petals = params["n_petals"]
 
-    # Initialize the appropriate model based on the checkpoint
+    # model based on checkpoint
     if "Fourier" in model_name or model_name == "FourierCurve":
-        n_coeffs = params.get("model_size", len(state_dict.get('coeffs_x', [])))
-        model = FourierCurve(tmin=tmin, tmax=tmax, initial_max=1.0, n_coeffs=n_coeffs).to(device)
+        n_coeffs = params.get("model_size", 51)
+        model = FourierCurve(
+            tmin=tmin, 
+            tmax=tmax, 
+            n_petals=n_petals, 
+            initial_max=1.0, 
+            n_coeffs=n_coeffs
+        ).to(device)
     else:
         model = Ellipse(tmin=tmin, tmax=tmax, initial_max=1.0).to(device)
 
     model.load_state_dict(state_dict)
     model.eval()
 
-    # 3. Generate the trajectory
+    # main traj
     timesteps = params["timesteps"]
     dt = params["duration"] / (timesteps - 1)
     t = torch.linspace(0, params["duration"], steps=timesteps, device=device).unsqueeze(1)
@@ -42,38 +50,45 @@ def export_kspace_json(checkpoint_path, output_json_path):
     with torch.no_grad():
         traj = model(t)
 
-        # 4. Full rosette
-        n_petals = params["n_petals"]
-        rotation_matrix = get_rotation_matrix(n_petals, device=device)
-        
+        # complete rosette
         kmax_img = params.get("kmax_img", 1.0) 
         zero_filling = params.get("zero_filling", True)
 
         rosette, _, _ = make_rosette(
-            traj, rotation_matrix, n_petals, kmax_img, dt, zero_filling=zero_filling
+            angles=model.angles, 
+            traj=traj, 
+            n_petals=n_petals, 
+            kmax_img=kmax_img, 
+            dt=dt, 
+            zero_filling=zero_filling
         )
 
-    # 5. Extract K-space points per petal
+
+    print(f"Petals angles (degrees): {model.angles.detach().numpy()*180/torch.pi}")
+    # k space points per petal
     shift = timesteps - 1
     petals = [rosette[i * shift : (i + 1) * shift, :] for i in range(n_petals)]
 
-    # Python floats for JSON file
     kx_data = [p[:, 0].tolist() for p in petals]
     ky_data = [p[:, 1].tolist() for p in petals]
 
     plt.figure(figsize=(6, 6))
     for i in range(n_petals):
-        plt.plot(kx_data[i], ky_data[i])
-    plt.title('K-space Trajectory')
+        plt.plot(kx_data[i], ky_data[i], label=f'Petal {i+1}' if n_petals <= 10 else "")
+    
+    plt.title('K-space Trajectory (Extracted from Checkpoint)')
     plt.xlabel('Kx (1/m)')
     plt.ylabel('Ky (1/m)')
-    plt.grid(True)
+    plt.axis("equal")
+    plt.grid(True, linestyle="--", alpha=0.5)
     plt.show()
 
-    # 6. JSON file
+    # JSON
     export_data = {
         "info": {
-            "description": "K-space trajectory extracted from checkpoint"
+            "description": "K-space trajectory extracted from checkpoint",
+            "n_petals": n_petals,
+            "timesteps_per_petal": shift
         },
         "k_space": {
             "Kx": kx_data,
@@ -81,7 +96,10 @@ def export_kspace_json(checkpoint_path, output_json_path):
         }
     }
 
-    os.makedirs(os.path.dirname(output_json_path), exist_ok=True)
+    output_dir = os.path.dirname(output_json_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        
     with open(output_json_path, "w") as f:
         json.dump(export_data, f, indent=4)
 
@@ -89,7 +107,7 @@ def export_kspace_json(checkpoint_path, output_json_path):
 
 
 if __name__ == "__main__":
-    CHECKPOINT_FILE = "results_loss_compare/pns_threshold_slew_threshold_2026-03-16_17-40/checkpoint.pt"  
-    OUTPUT_JSON = "results_loss_compare/pns_threshold_slew_threshold_2026-03-16_17-40/kspace_traj.json" 
+    CHECKPOINT_FILE = "results/2026-05-18_22-55/checkpoint.pt"  
+    OUTPUT_JSON = "results/2026-05-18_22-55/kspace_traj.json" 
 
     export_kspace_json(CHECKPOINT_FILE, OUTPUT_JSON)
