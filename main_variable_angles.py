@@ -22,7 +22,7 @@ device = get_device()
 
 batch_size = 5
 dcfnet_path = f"trained_models/dcfnet_512_unet_trained_with_E.pt"
-variable_angles = False  # Set to False for fixed angles, True for variable angles during training
+variable_angles = True  # Set to False for fixed angles, True for variable angles during training
 
 phantoms = get_batch_of_phantoms_brainweb(batch_size, minc_path="t1_icbm_normal_1mm_pn3_rf20.mnc", size=(params["img_size"], params["img_size"])).to(device)
 fft = compute_initial_fft(phantoms, padding=params["img_size"]).to(device)
