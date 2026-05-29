@@ -7,7 +7,7 @@ from utils_3 import get_device, make_rosette
 from models import FourierCurve, Ellipse
 from params import *
 
-def export_kspace_json(checkpoint_path, output_json_path):
+def export_kspace_json(checkpoint_path, output_json_path, variable_angles=True):
     device = get_device()
 
     # checkpoint
@@ -28,10 +28,8 @@ def export_kspace_json(checkpoint_path, output_json_path):
     n_petals = params["n_petals"]
 
     angles_shape = state_dict.get("angles", torch.empty(0)).shape[0]
-    
-    variable_angles = True 
-    # False if angles are not present in the checkpoint, True if they are present 
 
+    kmax_traj = params["res"] / (2 * params["FoV"])
     # model based on checkpoint
     if "Fourier" in model_name or model_name == "FourierCurve":
         n_coeffs = params.get("model_size", 51)
@@ -39,12 +37,12 @@ def export_kspace_json(checkpoint_path, output_json_path):
             tmin=tmin, 
             tmax=tmax, 
             n_petals=n_petals, 
-            initial_max=1.0, 
+            initial_max=kmax_traj, 
             n_coeffs=n_coeffs,
             variable_angles=variable_angles
         ).to(device)
     else:
-        model = Ellipse(tmin=tmin, tmax=tmax, initial_max=1.0).to(device)
+        model = Ellipse(tmin=tmin, tmax=tmax, initial_max=kmax_traj).to(device)
 
     model.load_state_dict(state_dict)
     model.eval()
@@ -58,7 +56,7 @@ def export_kspace_json(checkpoint_path, output_json_path):
         traj = model(t)
 
         # complete rosette
-        kmax_img = params.get("kmax_img", 1.0) 
+        kmax_img = params["img_size"] / (2 * params["FoV"])
         zero_filling = params.get("zero_filling", True)
 
         rosette, _, _ = make_rosette(
@@ -122,7 +120,7 @@ def export_kspace_json(checkpoint_path, output_json_path):
 
 
 if __name__ == "__main__":
-    CHECKPOINT_FILE = "results/2026-05-21_05-35/checkpoint.pt"  
-    OUTPUT_JSON = "results/2026-05-21_05-35/kspace_traj.json" 
+    CHECKPOINT_FILE = "MRSI_trajs/2026-05-20_01-26_fixed/checkpoint.pt"  
+    OUTPUT_JSON = "MRSI_trajs/2026-05-20_01-26_fixed/kspace_traj_2026-05-20_01-26.json" 
 
-    export_kspace_json(CHECKPOINT_FILE, OUTPUT_JSON)
+    export_kspace_json(CHECKPOINT_FILE, OUTPUT_JSON, variable_angles=False)
