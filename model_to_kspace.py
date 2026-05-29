@@ -29,7 +29,7 @@ def export_kspace_json(checkpoint_path, output_json_path):
 
     angles_shape = state_dict.get("angles", torch.empty(0)).shape[0]
     
-    variable_angles = False 
+    variable_angles = True 
     # False if angles are not present in the checkpoint, True if they are present 
 
     # model based on checkpoint
@@ -122,7 +122,7 @@ def export_kspace_json(checkpoint_path, output_json_path):
 
 
 if __name__ == "__main__":
-    CHECKPOINT_FILE = "results/2026-05-19_19-20/checkpoint.pt"  
-    OUTPUT_JSON = "results/2026-05-19_19-20/kspace_traj.json" 
+    CHECKPOINT_FILE = "results/2026-05-21_05-35/checkpoint.pt"  
+    OUTPUT_JSON = "results/2026-05-21_05-35/kspace_traj.json" 
 
     export_kspace_json(CHECKPOINT_FILE, OUTPUT_JSON)
