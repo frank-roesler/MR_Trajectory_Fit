@@ -21,3 +21,4 @@ trained_models/
 MRSI_trajs/
 reconstruction/twixtools/
 recon_first_try.ipynb
+model_to_kspace_old_rosette_rotation.py

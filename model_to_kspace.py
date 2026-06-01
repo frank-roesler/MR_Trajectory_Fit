@@ -120,7 +120,7 @@ def export_kspace_json(checkpoint_path, output_json_path, variable_angles=True):
 
 
 if __name__ == "__main__":
-    CHECKPOINT_FILE = "MRSI_trajs/2026-05-20_01-26_fixed/checkpoint.pt"  
-    OUTPUT_JSON = "MRSI_trajs/2026-05-20_01-26_fixed/kspace_traj_2026-05-20_01-26.json" 
+    CHECKPOINT_FILE = "MRSI_trajs/2026-05-19_04-31_variable/checkpoint.pt"  
+    OUTPUT_JSON = "MRSI_trajs/2026-05-19_04-31_variable/kspace_traj_2026-05-19_04-31.json" 
 
     export_kspace_json(CHECKPOINT_FILE, OUTPUT_JSON, variable_angles=False)
