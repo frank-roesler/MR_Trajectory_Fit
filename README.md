@@ -2,6 +2,8 @@
 
 **MR_Trajectory_Fit** is a Python project for MRI trajectory optimization and image reconstruction using differentiable Non-uniform Fast Fourier Transforms (NUFFT) and deep learning. It provides tools for designing, training, and evaluating MRI sampling trajectories, with support for automatic differentiation and integration with PyTorch.
 
+This is joint work with André Döring (EPFL Lausanne) [https://cibm.ch/community/andre-doring/](https://cibm.ch/community/andre-doring/).
+
 ## Features
 
 - Trajectory optimization using Fourier series and ellipses
